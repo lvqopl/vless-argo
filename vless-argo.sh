@@ -102,7 +102,7 @@ install_xray() {
 {
   "inbounds": [
     {
-      "port": 10000,
+      "port": 8080,
       "listen": "127.0.0.1",
       "protocol": "vless",
       "settings": {
@@ -187,7 +187,7 @@ configure_tunnel() {
 
     if [ "$mode_choice" = "1" ]; then
         TUNNEL_MODE="temp"
-        exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:10000"
+        exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080"
         CURRENT_DOMAIN="pending..." # Will be fetched later
         echo -e "${GREEN}Temporary tunnel mode selected.${NC}"
     elif [ "$mode_choice" = "2" ]; then
@@ -467,7 +467,7 @@ switch_to_temp_tunnel() {
     echo -e "${BLUE}--- Switching to Temporary Tunnel ---${NC}"
     
     # Update cloudflared service
-    local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:10000"
+    local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080"
     sed -i "/^ExecStart=/c\ExecStart=${exec_start_cmd}" $CLOUDFLARED_SERVICE_FILE
     
     systemctl daemon-reload
