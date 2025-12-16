@@ -6,7 +6,7 @@
 # Description: A comprehensive script for one-click deployment and management of 
 #              VLESS with Cloudflare Argo Tunnel. Supports Debian and Alpine Linux.
 # Author:      AI Assistant
-# Version:     1.2.1 (Bug Fix)
+# Version:     1.3.0 (Alpine Fix)
 #===============================================================================================
 
 # --- 颜色代码 ---
@@ -100,6 +100,11 @@ press_any_key() {
     read -r
 }
 
+# 生成UUID (Alpine没有xray命令时使用)
+generate_uuid() {
+    cat /proc/sys/kernel/random/uuid
+}
+
 #===============================================================================================
 #                              安装功能函数
 #===============================================================================================
@@ -121,17 +126,45 @@ install_dependencies() {
     echo -e "${GREEN}依赖项安装成功。${NC}"
 }
 
-# 安装 Xray-core
+# 安装 Xray-core (通用方法,适配Alpine)
 install_xray() {
     echo -e "${BLUE}正在安装 Xray-core...${NC}"
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -s install
-    if [ ! -f "$XRAY_BINARY" ]; then
-        echo -e "${RED}Xray 安装失败。${NC}"
-        exit 1
-    fi
     
-    # 生成 UUID
-    CURRENT_UUID=$($XRAY_BINARY uuid)
+    if [ "$OS_TYPE" = "debian" ]; then
+        # Debian/Ubuntu 使用官方安装脚本
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -s install
+        if [ ! -f "$XRAY_BINARY" ]; then
+            echo -e "${RED}Xray 安装失败。${NC}"
+            exit 1
+        fi
+        CURRENT_UUID=$($XRAY_BINARY uuid)
+    else
+        # Alpine 手动下载安装
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "x86_64" ]; then
+            XRAY_DOWNLOAD_URL=$(curl -sL "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep "browser_download_url.*linux-64.zip" | cut -d '"' -f 4)
+        elif [ "$ARCH" = "aarch64" ]; then
+            XRAY_DOWNLOAD_URL=$(curl -sL "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep "browser_download_url.*linux-arm64-v8a.zip" | cut -d '"' -f 4)
+        else
+            echo -e "${RED}不支持的架构: $ARCH${NC}"
+            exit 1
+        fi
+        
+        if [ -z "$XRAY_DOWNLOAD_URL" ]; then
+            echo -e "${RED}获取Xray下载链接失败${NC}"
+            exit 1
+        fi
+        
+        # 下载并解压
+        wget -q "$XRAY_DOWNLOAD_URL" -O /tmp/xray.zip
+        unzip -q /tmp/xray.zip -d /tmp/xray
+        mv /tmp/xray/xray $XRAY_BINARY
+        chmod +x $XRAY_BINARY
+        rm -rf /tmp/xray /tmp/xray.zip
+        
+        # 生成UUID
+        CURRENT_UUID=$(generate_uuid)
+    fi
     
     # 创建 Xray 配置文件
     mkdir -p $XRAY_INSTALL_DIR
@@ -188,15 +221,15 @@ WantedBy=multi-user.target
 EOF
     else
         # OpenRC 服务文件
-        cat > $XRAY_SERVICE_FILE <<-'EOF'
+        cat > $XRAY_SERVICE_FILE <<-EOF
 #!/sbin/openrc-run
 
 name="xray"
 description="Xray Service"
-command="/usr/local/bin/xray"
-command_args="run -config /usr/local/etc/xray/config.json"
+command="${XRAY_BINARY}"
+command_args="run -config ${XRAY_CONFIG_FILE}"
 command_background="yes"
-pidfile="/run/${RC_SVCNAME}.pid"
+pidfile="/run/\${RC_SVCNAME}.pid"
 
 depend() {
     need net
@@ -288,13 +321,14 @@ WantedBy=multi-user.target
 EOF
     else
         # OpenRC 服务文件
+        local cmd_args="${exec_start_cmd#${CLOUDFLARED_BINARY} }"
         cat > $CLOUDFLARED_SERVICE_FILE <<-EOF
 #!/sbin/openrc-run
 
 name="cloudflared"
 description="Cloudflare Tunnel"
 command="${CLOUDFLARED_BINARY}"
-command_args="${exec_start_cmd#${CLOUDFLARED_BINARY} }"
+command_args="${cmd_args}"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
 
@@ -370,7 +404,6 @@ service_control() {
 
 # 完整安装流程
 do_install() {
-    detect_os
     install_dependencies
     install_xray
     install_cloudflared
@@ -534,7 +567,11 @@ view_logs() {
 # 修改 UUID
 modify_uuid() {
     echo -e "${BLUE}正在生成新的 UUID...${NC}"
-    CURRENT_UUID=$($XRAY_BINARY uuid)
+    if [ "$OS_TYPE" = "debian" ] && [ -f "$XRAY_BINARY" ]; then
+        CURRENT_UUID=$($XRAY_BINARY uuid)
+    else
+        CURRENT_UUID=$(generate_uuid)
+    fi
     
     sed -i "s/\"id\": \".*\"/\"id\": \"${CURRENT_UUID}\"/" $XRAY_CONFIG_FILE
     
@@ -574,7 +611,8 @@ modify_permanent_tunnel() {
         sed -i "/^ExecStart=/c\ExecStart=${exec_start_cmd}" $CLOUDFLARED_SERVICE_FILE
         systemctl daemon-reload
     else
-        sed -i "/^command_args=/c\command_args=\"${exec_start_cmd#${CLOUDFLARED_BINARY} }\"" $CLOUDFLARED_SERVICE_FILE
+        local cmd_args="${exec_start_cmd#${CLOUDFLARED_BINARY} }"
+        sed -i "/^command_args=/c\command_args=\"${cmd_args}\"" $CLOUDFLARED_SERVICE_FILE
     fi
     
     service_control restart cloudflared
@@ -596,7 +634,8 @@ switch_to_temp_tunnel() {
         sed -i "/^ExecStart=/c\ExecStart=${exec_start_cmd}" $CLOUDFLARED_SERVICE_FILE
         systemctl daemon-reload
     else
-        sed -i "/^command_args=/c\command_args=\"${exec_start_cmd#${CLOUDFLARED_BINARY} }\"" $CLOUDFLARED_SERVICE_FILE
+        local cmd_args="${exec_start_cmd#${CLOUDFLARED_BINARY} }"
+        sed -i "/^command_args=/c\command_args=\"${cmd_args}\"" $CLOUDFLARED_SERVICE_FILE
     fi
     
     service_control restart cloudflared
@@ -629,8 +668,8 @@ do_uninstall() {
     
     if [[ "$confirm" =~ ^[yY]$ ]]; then
         echo -e "${BLUE}正在停止服务...${NC}"
-        service_control stop xray
-        service_control stop cloudflared
+        service_control stop xray 2>/dev/null
+        service_control stop cloudflared 2>/dev/null
         
         if [ "$SERVICE_MANAGER" = "systemd" ]; then
             systemctl disable xray > /dev/null 2>&1
@@ -646,7 +685,10 @@ do_uninstall() {
         fi
         
         echo -e "${BLUE}正在删除 Xray...${NC}"
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -s uninstall --remove
+        if [ "$OS_TYPE" = "debian" ]; then
+            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -s uninstall --remove 2>/dev/null
+        fi
+        rm -f $XRAY_BINARY
         rm -rf $XRAY_INSTALL_DIR
         
         echo -e "${BLUE}正在删除 Cloudflared...${NC}"
@@ -734,7 +776,7 @@ show_main_menu() {
     fi
 
     echo "======================================================"
-    echo "      VLESS + Argo 隧道一键管理脚本 v1.2.1"
+    echo "      VLESS + Argo 隧道一键管理脚本 v1.3.0"
     echo "        支持 Debian/Ubuntu 和 Alpine Linux"
     echo "======================================================"
     if [ "$INSTALLED_STATUS" = "installed" ]; then
