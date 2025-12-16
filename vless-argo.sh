@@ -1,23 +1,22 @@
 #!/bin/bash
 
 #===============================================================================================
-# VLESS + Argo Tunnel Management Script for LXC Debian
+# VLESS + Argo Tunnel Management Script for LXC Debian (Chinese UI Version)
 #
 # Description: A comprehensive script for one-click deployment and management of 
 #              VLESS with Cloudflare Argo Tunnel in an LXC Debian container.
 # Author:      AI Assistant
-# Version:     1.0.0
-# GitHub:      (Please upload to your own repository)
+# Version:     1.1.0
 #===============================================================================================
 
-# --- Color Codes ---
+# --- 颜色代码 ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# --- File and Service Paths ---
+# --- 文件和及服务路径 ---
 XRAY_INSTALL_DIR="/usr/local/etc/xray"
 XRAY_CONFIG_FILE="${XRAY_INSTALL_DIR}/config.json"
 XRAY_BINARY="/usr/local/bin/xray"
@@ -28,31 +27,31 @@ CLOUDFLARED_SERVICE_FILE="/etc/systemd/system/cloudflared.service"
 
 NODE_INFO_FILE="/root/vless_node_info.txt"
 
-# --- Global State Variables ---
+# --- 全局状态变量 ---
 INSTALLED_STATUS="not_installed"
 CURRENT_UUID=""
 CURRENT_DOMAIN=""
 TUNNEL_MODE="" # temp or permanent
 
 #===============================================================================================
-#                              CORE HELPER FUNCTIONS
+#                              核心辅助函数
 #===============================================================================================
 
-# Check if running as root
+# 检查是否为 root 用户
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
-        echo -e "${RED}Error: This script must be run as root. Please use 'sudo' or 'su'.${NC}"
+        echo -e "${RED}错误：此脚本必须以 root 身份运行。请使用 'sudo' 或 'su'。${NC}"
         exit 1
     fi
 }
 
-# Update the installation status by checking files
+# 通过检查文件来更新安装状态
 update_status() {
     if [ -f "$XRAY_BINARY" ] && [ -f "$CLOUDFLARED_BINARY" ] && [ -f "$NODE_INFO_FILE" ]; then
         INSTALLED_STATUS="installed"
-        # Load config from info file
+        # 从信息文件中加载配置
         CURRENT_UUID=$(grep "UUID:" "$NODE_INFO_FILE" | awk '{print $2}')
-        CURRENT_DOMAIN=$(grep "Domain:" "$NODE_INFO_FILE" | awk '{print $2}')
+        CURRENT_DOMAIN=$(grep "域名:" "$NODE_INFO_FILE" | awk '{print $2}')
         if grep -q "trycloudflare.com" <<< "$CURRENT_DOMAIN"; then
             TUNNEL_MODE="temp"
         else
@@ -63,40 +62,40 @@ update_status() {
     fi
 }
 
-# Pause and wait for user to press Enter
+# 暂停并等待用户按下回车键
 press_any_key() {
-    echo -e "\n${YELLOW}Press Enter to continue...${NC}"
+    echo -e "\n${YELLOW}按回车键继续...${NC}"
     read -r
 }
 
 #===============================================================================================
-#                              INSTALLATION FUNCTIONS
+#                              安装功能函数
 #===============================================================================================
 
-# Install necessary dependencies
+# 安装必要的依赖
 install_dependencies() {
-    echo -e "${BLUE}Updating package lists and installing dependencies (curl, wget, unzip)...${NC}"
+    echo -e "${BLUE}正在更新软件包列表并安装依赖项 (curl, wget, unzip)...${NC}"
     apt-get update && apt-get install -y curl wget unzip > /dev/null 2>&1
     if [ $? -ne 0 ]; then
-        echo -e "${RED}Failed to install dependencies.${NC}"
+        echo -e "${RED}依赖项安装失败。${NC}"
         exit 1
     fi
-    echo -e "${GREEN}Dependencies installed successfully.${NC}"
+    echo -e "${GREEN}依赖项安装成功。${NC}"
 }
 
-# Install Xray-core
+# 安装 Xray-core
 install_xray() {
-    echo -e "${BLUE}Installing Xray-core...${NC}"
+    echo -e "${BLUE}正在安装 Xray-core...${NC}"
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -s install
     if [ ! -f "$XRAY_BINARY" ]; then
-        echo -e "${RED}Xray installation failed.${NC}"
+        echo -e "${RED}Xray 安装失败。${NC}"
         exit 1
     fi
     
-    # Generate UUID
+    # 生成 UUID
     CURRENT_UUID=$($XRAY_BINARY uuid)
     
-    # Create Xray config
+    # 创建 Xray 配置文件
     mkdir -p $XRAY_INSTALL_DIR
     cat > $XRAY_CONFIG_FILE <<-EOF
 {
@@ -129,7 +128,7 @@ install_xray() {
 }
 EOF
 
-    # Create systemd service file for Xray
+    # 为 Xray 创建 systemd 服务文件
     cat > $XRAY_SERVICE_FILE <<-EOF
 [Unit]
 Description=Xray Service
@@ -148,70 +147,70 @@ RestartPreventExitStatus=23
 [Install]
 WantedBy=multi-user.target
 EOF
-    echo -e "${GREEN}Xray-core installed and configured successfully.${NC}"
+    echo -e "${GREEN}Xray-core 安装和配置成功。${NC}"
 }
 
-# Install Cloudflared
+# 安装 Cloudflared
 install_cloudflared() {
-    echo -e "${BLUE}Installing Cloudflared...${NC}"
+    echo -e "${BLUE}正在安装 Cloudflared...${NC}"
     ARCH=$(uname -m)
     if [ "$ARCH" = "x86_64" ]; then
         DOWNLOAD_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
     elif [ "$ARCH" = "aarch64" ]; then
         DOWNLOAD_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
     else
-        echo -e "${RED}Unsupported architecture: $ARCH. Only x86_64 and aarch64 are supported.${NC}"
+        echo -e "${RED}不支持的架构: $ARCH. 仅支持 x86_64 和 aarch64。${NC}"
         exit 1
     fi
     
     wget -q $DOWNLOAD_URL -O $CLOUDFLARED_BINARY
     if [ $? -ne 0 ]; then
-        echo -e "${RED}Failed to download Cloudflared.${NC}"
+        echo -e "${RED}下载 Cloudflared 失败。${NC}"
         exit 1
     fi
     
     chmod +x $CLOUDFLARED_BINARY
-    echo -e "${GREEN}Cloudflared installed successfully.${NC}"
+    echo -e "${GREEN}Cloudflared 安装成功。${NC}"
 }
 
-# Configure Tunnel (Temporary or Permanent)
+# 配置隧道 (临时或固定)
 configure_tunnel() {
     clear
-    echo -e "${BLUE}--- Tunnel Mode Selection ---${NC}"
-    echo "1. Temporary Tunnel (Easy test, domain changes on restart)"
-    echo "2. Permanent Tunnel (Requires Cloudflare Token and custom domain)"
+    echo -e "${BLUE}--- 隧道模式选择 ---${NC}"
+    echo "1. 临时隧道模式 (易于测试，重启后域名会变化)"
+    echo "2. 固定隧道模式 (需要 Cloudflare Token 和自定义域名)"
     echo -e "--------------------------------"
-    read -p "Please choose a mode [1-2]: " mode_choice
+    read -p "请选择一个模式 [1-2]: " mode_choice
 
     local exec_start_cmd
 
     if [ "$mode_choice" = "1" ]; then
         TUNNEL_MODE="temp"
         exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080"
-        CURRENT_DOMAIN="pending..." # Will be fetched later
-        echo -e "${GREEN}Temporary tunnel mode selected.${NC}"
+        CURRENT_DOMAIN="pending..." # 稍后获取
+        echo -e "${GREEN}已选择临时隧道模式。${NC}"
     elif [ "$mode_choice" = "2" ]; then
         TUNNEL_MODE="permanent"
-        read -p "Please enter your Cloudflare Argo Tunnel Token: " argo_token
+        read -p "请输入您的 Cloudflare Argo Tunnel Token: " argo_token
         if [ -z "$argo_token" ]; then
-            echo -e "${RED}Token cannot be empty. Aborting.${NC}"
+            echo -e "${RED}Token 不能为空。正在中止。${NC}"
             exit 1
         fi
-        read -p "Please enter your custom domain (e.g., sub.yourdomain.com): " custom_domain
+        read -p "请输入您的自定义域名 (例如 sub.yourdomain.com): " custom_domain
         if [ -z "$custom_domain" ]; then
-            echo -e "${RED}Domain cannot be empty. Aborting.${NC}"
+            echo -e "${RED}域名不能为空。正在中止。${NC}"
             exit 1
         fi
         CURRENT_DOMAIN=$custom_domain
         exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate run --token ${argo_token}"
-        echo -e "${GREEN}Permanent tunnel mode selected for domain: ${CURRENT_DOMAIN}${NC}"
-        echo -e "${YELLOW}Important: Make sure you have set up a CNAME record in your Cloudflare DNS for '${CURRENT_DOMAIN}' pointing to your tunnel's ID (e.g., xxxxx.cfargotunnel.com).${NC}"
+        echo -e "${GREEN}已为域名 ${CURRENT_DOMAIN} 选择固定隧道模式${NC}"
+        echo -e "${YELLOW}重要提示：请确保您已在 Cloudflare DNS 中为 '${CURRENT_DOMAIN}' 设置了 CNAME 记录，指向您的隧道 ID (例如 xxxxx.cfargotunnel.com)。${NC}"
     else
-        echo -e "${RED}Invalid choice. Aborting.${NC}"
+        echo -e "${RED}无效的选择。正在中止。${NC}"
         exit 1
     fi
 
-    # Create systemd service file for Cloudflared
+    # 为 Cloudflared 创建 systemd 服务文件
     cat > $CLOUDFLARED_SERVICE_FILE <<-EOF
 [Unit]
 Description=Cloudflare Tunnel
@@ -229,10 +228,10 @@ WantedBy=multi-user.target
 EOF
 }
 
-# Generate and save node connection info
+# 生成并保存节点连接信息
 generate_and_save_node_info() {
     if [ -z "$CURRENT_UUID" ] || [ -z "$CURRENT_DOMAIN" ] || [ "$CURRENT_DOMAIN" = "pending..." ]; then
-        echo -e "${RED}Could not generate node info: UUID or Domain is missing.${NC}"
+        echo -e "${RED}无法生成节点信息：缺少 UUID 或域名。${NC}"
         return 1
     fi
 
@@ -241,108 +240,116 @@ generate_and_save_node_info() {
     
     cat > $NODE_INFO_FILE <<-EOF
 # ===============================================================
-#          VLESS + Argo Tunnel Node Information
+#          VLESS + Argo 隧道节点信息
 # ===============================================================
 
-Mode:             ${TUNNEL_MODE} Tunnel
-Domain:           ${CURRENT_DOMAIN}
+模式:             ${TUNNEL_MODE} 隧道
+域名:             ${CURRENT_DOMAIN}
 UUID:             ${CURRENT_UUID}
-Port:             443
-Path:             /vless
-Security:         tls
-Network:          ws
+端口:             443
+路径:             /vless
+安全性:           tls
+网络:             ws
 
-# --- Standard Connection Link ---
+# --- 标准版连接链接 ---
 ${standard_link}
 
-# --- Preferred IP Connection Link (Recommended) ---
+# --- 优选IP版连接链接 (推荐) ---
 ${preferred_link}
 
 # ===============================================================
-#          Client Configuration Parameters
+#          客户端配置参数
 # ===============================================================
-Address:          ${CURRENT_DOMAIN} (or cf.877774.xyz for preferred)
-Port:             443
+地址:             ${CURRENT_DOMAIN} (优选IP版请使用 cf.877774.xyz)
+端口:             443
 UUID:             ${CURRENT_UUID}
-AlterId:          0
-Security:         none
-Network:          ws
-WS Host:          ${CURRENT_DOMAIN}
-WS Path:          /vless
-TLS:              On
-SNI:              ${CURRENT_DOMAIN}
-Fingerprint:      chrome
+额外ID(AlterId):  0
+加密方式:         none
+网络:             ws
+WebSocket 主机:   ${CURRENT_DOMAIN}
+WebSocket 路径:   /vless
+TLS:              开启
+SNI(服务器名称):  ${CURRENT_DOMAIN}
+指纹(Fingerprint): chrome
 ALPN:             h3,h2,http/1.1
 EOF
 
-    echo -e "${GREEN}Node information has been saved to ${NODE_INFO_FILE}${NC}"
+    echo -e "${GREEN}节点信息已保存到 ${NODE_INFO_FILE}${NC}"
 }
 
-# Full installation process
+# 完整安装流程
 do_install() {
     install_dependencies
     install_xray
     install_cloudflared
     configure_tunnel
     
-    echo -e "${BLUE}Enabling and starting services...${NC}"
+    echo -e "${BLUE}正在启用并启动服务...${NC}"
     systemctl daemon-reload
     systemctl enable xray > /dev/null 2>&1
     systemctl enable cloudflared > /dev/null 2>&1
     systemctl start xray
     systemctl start cloudflared
     
-    # If temp mode, fetch the domain
+    # 如果是临时模式，获取域名
     if [ "$TUNNEL_MODE" = "temp" ]; then
-        echo -e "${YELLOW}Waiting for temporary tunnel to establish...${NC}"
+        echo -e "${YELLOW}正在等待临时隧道建立... (约10秒)${NC}"
         sleep 10
         fetch_temp_domain
         if [ "$CURRENT_DOMAIN" = "not_found" ]; then
-            echo -e "${RED}Failed to get temporary domain. Please check Cloudflared logs.${NC}"
+            echo -e "${RED}获取临时域名失败。请检查 Cloudflared 日志。${NC}"
             press_any_key
             return
         fi
     fi
     
     generate_and_save_node_info
-    echo -e "\n${GREEN}Installation complete!${NC}"
+    echo -e "\n${GREEN}安装完成！${NC}"
     view_node_info
 }
 
 #===============================================================================================
-#                              MANAGEMENT FUNCTIONS
+#                              管理功能函数
 #===============================================================================================
 
-# Start, stop, restart services
+# 启动、停止、重启服务
 manage_services() {
     local action=$1
-    echo -e "${BLUE}${action^}ing services (Xray and Cloudflared)...${NC}"
+    local action_zh
+    case $action in
+        start) action_zh="启动" ;;
+        stop) action_zh="停止" ;;
+        restart) action_zh="重启" ;;
+    esac
+
+    echo -e "${BLUE}正在 ${action_zh} 服务 (Xray 和 Cloudflared)...${NC}"
     systemctl ${action} xray
     systemctl ${action} cloudflared
-    echo -e "${GREEN}Services ${action}ed.${NC}"
+    echo -e "${GREEN}服务已${action_zh}。${NC}"
+    
     if [ "$action" = "restart" ] || [ "$action" = "start" ]; then
         if [ "$TUNNEL_MODE" = "temp" ]; then
-            echo -e "${YELLOW}Temporary tunnel mode detected. The domain may have changed.${NC}"
-            echo -e "${YELLOW}Checking for new domain in 10 seconds...${NC}"
+            echo -e "${YELLOW}检测到临时隧道模式。域名可能已更改。${NC}"
+            echo -e "${YELLOW}正在于 10 秒后检查新域名...${NC}"
             sleep 10
             fetch_temp_domain
             generate_and_save_node_info
-            echo -e "${BLUE}New domain is: ${CURRENT_DOMAIN}${NC}"
+            echo -e "${BLUE}新域名是: ${CURRENT_DOMAIN}${NC}"
         fi
     fi
     press_any_key
 }
 
-# Check service status
+# 检查服务状态
 check_status() {
-    echo -e "${BLUE}--- Xray Service Status ---${NC}"
+    echo -e "${BLUE}--- Xray 服务状态 ---${NC}"
     systemctl status xray --no-pager
-    echo -e "\n${BLUE}--- Cloudflared Service Status ---${NC}"
+    echo -e "\n${BLUE}--- Cloudflared 服务状态 ---${NC}"
     systemctl status cloudflared --no-pager
     press_any_key
 }
 
-# View node info
+# 查看节点信息
 view_node_info() {
     if [ -f "$NODE_INFO_FILE" ]; then
         clear
@@ -350,20 +357,19 @@ view_node_info() {
         cat "$NODE_INFO_FILE"
         echo -e "${NC}"
     else
-        echo -e "${RED}Node info file not found.${NC}"
+        echo -e "${RED}未找到节点信息文件。${NC}"
     fi
     press_any_key
 }
 
-# Fetch temporary Argo domain from logs
+# 从日志中获取临时 Argo 域名
 fetch_temp_domain() {
-    echo -e "${BLUE}Fetching temporary domain from logs...${NC}"
-    # Retry loop to get the domain
+    echo -e "${BLUE}正在从日志中获取临时域名...${NC}"
     for i in {1..5}; do
         domain=$(journalctl -u cloudflared.service --since "5 minutes ago" | grep -o 'https://[a-z0-9-]*\.trycloudflare.com' | tail -n 1 | sed 's/https:\/\///')
         if [ -n "$domain" ]; then
             CURRENT_DOMAIN=$domain
-            echo -e "${GREEN}Found domain: ${CURRENT_DOMAIN}${NC}"
+            echo -e "${GREEN}找到域名: ${CURRENT_DOMAIN}${NC}"
             return 0
         fi
         sleep 2
@@ -372,75 +378,73 @@ fetch_temp_domain() {
     return 1
 }
 
-# View temporary domain
+# 查看临时域名
 view_temp_domain() {
     if [ "$TUNNEL_MODE" != "temp" ]; then
-        echo -e "${YELLOW}This function is only for temporary tunnel mode.${NC}"
+        echo -e "${YELLOW}此功能仅适用于临时隧道模式。${NC}"
         press_any_key
         return
     fi
     fetch_temp_domain
     if [ "$CURRENT_DOMAIN" != "not_found" ]; then
-        echo -e "${GREEN}Current temporary domain: ${CURRENT_DOMAIN}${NC}"
-        # Check if domain has changed and offer to update
-        local old_domain=$(grep "Domain:" "$NODE_INFO_FILE" | awk '{print $2}')
+        echo -e "${GREEN}当前临时域名: ${CURRENT_DOMAIN}${NC}"
+        local old_domain=$(grep "域名:" "$NODE_INFO_FILE" | awk '{print $2}')
         if [ "$old_domain" != "$CURRENT_DOMAIN" ]; then
-            echo -e "${YELLOW}The domain has changed from ${old_domain}.${NC}"
-            read -p "Do you want to update the node info file? [y/N]: " confirm
+            echo -e "${YELLOW}域名已从 ${old_domain} 更改。${NC}"
+            read -p "是否要更新节点信息文件？[y/N]: " confirm
             if [[ "$confirm" =~ ^[yY]$ ]]; then
                 generate_and_save_node_info
             fi
         fi
     else
-        echo -e "${RED}Could not find the temporary domain in recent logs.${NC}"
+        echo -e "${RED}在最近的日志中找不到临时域名。${NC}"
     fi
     press_any_key
 }
 
-# View logs
+# 查看日志
 view_logs() {
     local service_name=$1
-    echo -e "${BLUE}Showing logs for ${service_name}. Press Ctrl+C to exit.${NC}"
+    echo -e "${BLUE}正在显示 ${service_name} 的日志。按 Ctrl+C 退出。${NC}"
     sleep 1
     journalctl -u "${service_name}" -f --no-pager
     press_any_key
 }
 
 #===============================================================================================
-#                              MODIFICATION FUNCTIONS
+#                              修改功能函数
 #===============================================================================================
 
-# Modify UUID
+# 修改 UUID
 modify_uuid() {
-    echo -e "${BLUE}Generating new UUID...${NC}"
+    echo -e "${BLUE}正在生成新的 UUID...${NC}"
     CURRENT_UUID=$($XRAY_BINARY uuid)
     
-    # Use sed to update the config file
     sed -i "s/\"id\": \".*\"/\"id\": \"${CURRENT_UUID}\"/" $XRAY_CONFIG_FILE
     
-    echo -e "${GREEN}New UUID: ${CURRENT_UUID}${NC}"
-    echo -e "${BLUE}Restarting Xray service to apply changes...${NC}"
+    echo -e "${GREEN}新 UUID: ${CURRENT_UUID}${NC}"
+    echo -e "${BLUE}正在重启 Xray 服务以应用更改...${NC}"
     systemctl restart xray
     
-    echo -e "${BLUE}Updating node information file...${NC}"
+    echo -e "${BLUE}正在更新节点信息文件...${NC}"
     generate_and_save_node_info
     
-    echo -e "${GREEN}UUID changed and node info updated successfully!${NC}"
+    echo -e "${GREEN}UUID 更改并成功更新节点信息！${NC}"
     press_any_key
 }
 
-# Switch to or reconfigure permanent tunnel
+# 切换到或重新配置固定隧道
 modify_permanent_tunnel() {
-    echo -e "${BLUE}--- Reconfiguring Permanent Tunnel ---${NC}"
-    read -p "Please enter your new Cloudflare Argo Tunnel Token: " argo_token
+    echo -e "${BLUE}--- 重新配置固定隧道 ---${NC}"
+    read -p "请输入您的新 Cloudflare Argo Tunnel Token: " argo_token
     if [ -z "$argo_token" ]; then
-        echo -e "${RED}Token cannot be empty. Aborting.${NC}"
+        echo -e "${RED}Token 不能为空。正在中止。${NC}"
         press_any_key
         return
     fi
-    read -p "Please enter your new custom domain: " custom_domain
+    read -p "请输入您的新自定义域名: " custom_domain
     if [ -z "$custom_domain" ]; then
-        echo -e "${RED}Domain cannot be empty. Aborting.${NC}"
+        echo -e "${RED}域名不能为空。正在中止。${NC}"
         press_any_key
         return
     fi
@@ -448,25 +452,23 @@ modify_permanent_tunnel() {
     CURRENT_DOMAIN=$custom_domain
     TUNNEL_MODE="permanent"
     
-    # Update cloudflared service
     local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate run --token ${argo_token}"
     sed -i "/^ExecStart=/c\ExecStart=${exec_start_cmd}" $CLOUDFLARED_SERVICE_FILE
     
     systemctl daemon-reload
     systemctl restart cloudflared
     
-    echo -e "${BLUE}Updating node information...${NC}"
+    echo -e "${BLUE}正在更新节点信息...${NC}"
     generate_and_save_node_info
     
-    echo -e "${GREEN}Switched to permanent tunnel mode successfully!${NC}"
+    echo -e "${GREEN}成功切换到固定隧道模式！${NC}"
     press_any_key
 }
 
-# Switch to temporary tunnel
+# 切换到临时隧道
 switch_to_temp_tunnel() {
-    echo -e "${BLUE}--- Switching to Temporary Tunnel ---${NC}"
+    echo -e "${BLUE}--- 切换到临时隧道 ---${NC}"
     
-    # Update cloudflared service
     local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080"
     sed -i "/^ExecStart=/c\ExecStart=${exec_start_cmd}" $CLOUDFLARED_SERVICE_FILE
     
@@ -475,181 +477,188 @@ switch_to_temp_tunnel() {
     
     TUNNEL_MODE="temp"
     
-    echo -e "${YELLOW}Waiting for temporary tunnel to establish...${NC}"
+    echo -e "${YELLOW}正在等待临时隧道建立... (约10秒)${NC}"
     sleep 10
     fetch_temp_domain
     if [ "$CURRENT_DOMAIN" = "not_found" ]; then
-        echo -e "${RED}Failed to get temporary domain. Please check Cloudflared logs.${NC}"
+        echo -e "${RED}获取临时域名失败。请检查 Cloudflared 日志。${NC}"
         press_any_key
         return
     fi
     
     generate_and_save_node_info
-    echo -e "${GREEN}Switched to temporary tunnel mode successfully!${NC}"
+    echo -e "${GREEN}成功切换到临时隧道模式！${NC}"
     press_any_key
 }
 
 #===============================================================================================
-#                              UNINSTALL FUNCTION
+#                              卸载功能函数
 #===============================================================================================
 
 do_uninstall() {
     clear
-    echo -e "${RED}!!! WARNING !!!${NC}"
-    echo -e "${YELLOW}This will completely remove Xray, Cloudflared, and all related configuration files.${NC}"
-    read -p "Are you sure you want to uninstall? [y/N]: " confirm
+    echo -e "${RED}!!! 警告 !!!${NC}"
+    echo -e "${YELLOW}此操作将彻底删除 Xray、Cloudflared 及所有相关配置文件。${NC}"
+    read -p "您确定要卸载吗？[y/N]: " confirm
     
     if [[ "$confirm" =~ ^[yY]$ ]]; then
-        echo -e "${BLUE}Stopping services...${NC}"
+        echo -e "${BLUE}正在停止服务...${NC}"
         systemctl stop xray
         systemctl stop cloudflared
         systemctl disable xray > /dev/null 2>&1
         systemctl disable cloudflared > /dev/null 2>&1
         
-        echo -e "${BLUE}Removing service files...${NC}"
+        echo -e "${BLUE}正在删除服务文件...${NC}"
         rm -f $XRAY_SERVICE_FILE
         rm -f $CLOUDFLARED_SERVICE_FILE
         systemctl daemon-reload
         
-        echo -e "${BLUE}Removing Xray...${NC}"
-        # Use official uninstall script
+        echo -e "${BLUE}正在删除 Xray...${NC}"
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -s uninstall --remove
-        rm -rf $XRAY_INSTALL_DIR # Ensure config dir is gone
+        rm -rf $XRAY_INSTALL_DIR
         
-        echo -e "${BLUE}Removing Cloudflared...${NC}"
+        echo -e "${BLUE}正在删除 Cloudflared...${NC}"
         rm -f $CLOUDFLARED_BINARY
         
-        echo -e "${BLUE}Cleaning up node info file...${NC}"
+        echo -e "${BLUE}正在清理节点信息文件...${NC}"
         rm -f $NODE_INFO_FILE
         
-        echo -e "\n${GREEN}Uninstallation complete.${NC}"
+        echo -e "\n${GREEN}卸载完成。${NC}"
     else
-        echo -e "${GREEN}Uninstallation cancelled.${NC}"
+        echo -e "${GREEN}卸载已取消。${NC}"
     fi
     press_any_key
 }
 
 
 #===============================================================================================
-#                                  MENU UI
+#                                  菜单界面
 #===============================================================================================
 
-# --- Sub Menus ---
+# --- 子菜单 ---
 show_service_menu() {
     clear
-    echo -e "${BLUE}--- Service Management ---${NC}"
-    echo "1. Check Service Status"
-    echo "2. Start Services"
-    echo "3. Stop Services"
-    echo "4. Restart Services"
-    echo "0. Back to Main Menu"
+    echo -e "${BLUE}--- 服务管理 ---${NC}"
+    echo "1. 查看服务状态"
+    echo "2. 启动所有服务"
+    echo "3. 停止所有服务"
+    echo "4. 重启所有服务"
+    echo "0. 返回主菜单"
     echo "--------------------------"
-    read -p "Enter your choice: " choice
+    read -p "请输入您的选择: " choice
     case $choice in
         1) check_status ;;
         2) manage_services "start" ;;
         3) manage_services "stop" ;;
         4) manage_services "restart" ;;
         0) return ;;
-        *) echo -e "${RED}Invalid choice.${NC}" && press_any_key ;;
+        *) echo -e "${RED}无效的选择。${NC}" && press_any_key ;;
     esac
 }
 
-show_log_menu() {
+show_info_log_menu() {
     clear
-    echo -e "${BLUE}--- View Logs ---${NC}"
-    echo "1. View Xray Log"
-    echo "2. View Cloudflared Log"
-    echo "0. Back to Main Menu"
+    echo -e "${BLUE}--- 信息与日志 ---${NC}"
+    echo "1. 查看 Xray 日志"
+    echo "2. 查看 Cloudflared 日志"
+    echo "3. 查看临时 Argo 域名"
+    echo "0. 返回主菜单"
     echo "---------------------"
-    read -p "Enter your choice: " choice
+    read -p "请输入您的选择: " choice
     case $choice in
         1) view_logs "xray" ;;
         2) view_logs "cloudflared" ;;
+        3) view_temp_domain ;;
         0) return ;;
-        *) echo -e "${RED}Invalid choice.${NC}" && press_any_key ;;
+        *) echo -e "${RED}无效的选择。${NC}" && press_any_key ;;
     esac
 }
 
 show_modify_menu() {
     clear
-    echo -e "${BLUE}--- Modify Configuration ---${NC}"
-    echo "1. Modify UUID"
-    echo "2. Reconfigure/Switch to Permanent Tunnel"
-    echo "3. Switch to Temporary Tunnel"
-    echo "0. Back to Main Menu"
+    echo -e "${BLUE}--- 修改配置 ---${NC}"
+    echo "1. 修改 UUID"
+    echo "2. 重新配置/切换到固定隧道"
+    echo "3. 切换到临时隧道"
+    echo "0. 返回主菜单"
     echo "----------------------------"
-    read -p "Enter your choice: " choice
+    read -p "请输入您的选择: " choice
     case $choice in
         1) modify_uuid ;;
         2) modify_permanent_tunnel ;;
         3) switch_to_temp_tunnel ;;
         0) return ;;
-        *) echo -e "${RED}Invalid choice.${NC}" && press_any_key ;;
+        *) echo -e "${RED}无效的选择。${NC}" && press_any_key ;;
     esac
 }
 
-# --- Main Menu ---
+# --- 主菜单 ---
 show_main_menu() {
     clear
     update_status
+    
+    local mode_zh
+    if [ "$TUNNEL_MODE" = "temp" ]; then
+        mode_zh="临时"
+    elif [ "$TUNNEL_MODE" = "permanent" ]; then
+        mode_zh="固定"
+    fi
+
     echo "======================================================"
-    echo "    VLESS + Argo Tunnel Management Script v1.0.0    "
+    echo "      VLESS + Argo 隧道一键管理脚本 v1.1.0"
     echo "======================================================"
     if [ "$INSTALLED_STATUS" = "installed" ]; then
-        echo -e "Status: ${GREEN}Installed${NC} | Mode: ${YELLOW}${TUNNEL_MODE^}${NC} | Domain: ${YELLOW}${CURRENT_DOMAIN}${NC}"
+        echo -e "状态: ${GREEN}已安装${NC} | 模式: ${YELLOW}${mode_zh}${NC} | 域名: ${YELLOW}${CURRENT_DOMAIN}${NC}"
         echo "------------------------------------------------------"
-        echo "1. View Node Info"
-        echo "2. Service Management"
-        echo "3. Information & Logs"
-        echo "4. Modify Configuration"
-        echo "5. View Temporary Argo Domain (if applicable)"
+        echo " 1. 查看节点信息"
+        echo " 2. 服务管理"
+        echo " 3. 信息与日志"
+        echo " 4. 修改配置"
         echo " "
-        echo "9. Uninstall"
-        echo "0. Exit"
+        echo " 9. 卸载脚本"
+        echo " 0. 退出脚本"
         echo "------------------------------------------------------"
     else
-        echo -e "Status: ${RED}Not Installed${NC}"
+        echo -e "状态: ${RED}未安装${NC}"
         echo "------------------------------------------------------"
-        echo "1. Install VLESS + Argo Tunnel"
-        echo "0. Exit"
+        echo " 1. 一键安装 VLESS + Argo 隧道"
+        echo " 0. 退出脚本"
         echo "------------------------------------------------------"
     fi
 }
 
 #===============================================================================================
-#                                 MAIN SCRIPT LOGIC
+#                                 主脚本逻辑
 #===============================================================================================
 
-# --- Entry Point ---
+# --- 入口点 ---
 main() {
     check_root
     while true; do
         show_main_menu
-        read -p "Enter your choice: " choice
+        read -p "请输入您的选择: " choice
         
         if [ "$INSTALLED_STATUS" = "installed" ]; then
             case $choice in
                 1) view_node_info ;;
                 2) show_service_menu ;;
-                3) show_log_menu ;;
+                3) show_info_log_menu ;;
                 4) show_modify_menu ;;
-                5) view_temp_domain ;;
                 9) do_uninstall ;;
                 0) break ;;
-                *) echo -e "${RED}Invalid choice.${NC}" && press_any_key ;;
+                *) echo -e "${RED}无效的选择。${NC}" && press_any_key ;;
             esac
         else
             case $choice in
                 1) do_install ;;
                 0) break ;;
-                *) echo -e "${RED}Invalid choice.${NC}" && press_any_key ;;
+                *) echo -e "${RED}无效的选择。${NC}" && press_any_key ;;
             esac
         fi
     done
     
-    echo -e "${GREEN}Goodbye!${NC}"
+    echo -e "${GREEN}再见！${NC}"
 }
 
-# Run the main function
+# 运行主函数
 main
