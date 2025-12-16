@@ -6,7 +6,7 @@
 # Description: A comprehensive script for one-click deployment and management of 
 #              VLESS with Cloudflare Argo Tunnel. Supports Debian and Alpine Linux.
 # Author:      AI Assistant
-# Version:     1.3.1 (Alpine Complete Fix)
+# Version:     1.3.2 (Always Show Full Menu)
 #===============================================================================================
 
 # --- 颜色代码 ---
@@ -180,7 +180,7 @@ install_xray() {
 {
   "inbounds": [
     {
-      "port": 8080,
+      "port": 10000,
       "listen": "127.0.0.1",
       "protocol": "vless",
       "settings": {
@@ -288,7 +288,7 @@ configure_tunnel() {
 
     if [ "$mode_choice" = "1" ]; then
         TUNNEL_MODE="temp"
-        exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080"
+        exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:10000"
         CURRENT_DOMAIN="pending..."
         echo -e "${GREEN}已选择临时隧道模式。${NC}"
     elif [ "$mode_choice" = "2" ]; then
@@ -636,7 +636,7 @@ modify_permanent_tunnel() {
 switch_to_temp_tunnel() {
     echo -e "${BLUE}--- 切换到临时隧道 ---${NC}"
     
-    local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080"
+    local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:10000"
     
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         sed -i "/^ExecStart=/c\ExecStart=${exec_start_cmd}" $CLOUDFLARED_SERVICE_FILE
@@ -790,28 +790,24 @@ show_main_menu() {
     fi
 
     echo "======================================================"
-    echo "      VLESS + Argo 隧道一键管理脚本 v1.3.1"
+    echo "      VLESS + Argo 隧道一键管理脚本 v1.3.2"
     echo "        支持 Debian/Ubuntu 和 Alpine Linux"
     echo "======================================================"
     if [ "$INSTALLED_STATUS" = "installed" ]; then
         echo -e "系统: ${GREEN}${OS_TYPE}${NC} | 状态: ${GREEN}已安装${NC}"
         echo -e "模式: ${YELLOW}${mode_zh}${NC} | 域名: ${YELLOW}${CURRENT_DOMAIN}${NC}"
-        echo "------------------------------------------------------"
-        echo " 1. 查看节点信息"
-        echo " 2. 服务管理"
-        echo " 3. 信息与日志"
-        echo " 4. 修改配置"
-        echo " "
-        echo " 9. 卸载脚本"
-        echo " 0. 退出脚本"
-        echo "------------------------------------------------------"
     else
-        echo -e "状态: ${RED}未安装${NC}"
-        echo "------------------------------------------------------"
-        echo " 1. 一键安装 VLESS + Argo 隧道"
-        echo " 0. 退出脚本"
-        echo "------------------------------------------------------"
+        echo -e "系统: ${GREEN}${OS_TYPE}${NC} | 状态: ${RED}未安装${NC}"
     fi
+    echo "------------------------------------------------------"
+    echo " 1. 一键安装 / 查看节点信息"
+    echo " 2. 服务管理"
+    echo " 3. 信息与日志"
+    echo " 4. 修改配置"
+    echo " "
+    echo " 9. 卸载脚本"
+    echo " 0. 退出脚本"
+    echo "------------------------------------------------------"
 }
 
 #===============================================================================================
@@ -829,23 +825,21 @@ main() {
         show_main_menu
         read -p "请输入您的选择: " choice
         
-        if [ "$INSTALLED_STATUS" = "installed" ]; then
-            case $choice in
-                1) view_node_info ;;
-                2) show_service_menu ;;
-                3) show_info_log_menu ;;
-                4) show_modify_menu ;;
-                9) do_uninstall ;;
-                0) break ;;
-                *) echo -e "${RED}无效的选择。${NC}" && press_any_key ;;
-            esac
-        else
-            case $choice in
-                1) do_install ;;
-                0) break ;;
-                *) echo -e "${RED}无效的选择。${NC}" && press_any_key ;;
-            esac
-        fi
+        case $choice in
+            1)
+                if [ "$INSTALLED_STATUS" = "installed" ]; then
+                    view_node_info
+                else
+                    do_install
+                fi
+                ;;
+            2) show_service_menu ;;
+            3) show_info_log_menu ;;
+            4) show_modify_menu ;;
+            9) do_uninstall ;;
+            0) break ;;
+            *) echo -e "${RED}无效的选择。${NC}" && press_any_key ;;
+        esac
     done
     
     echo -e "${GREEN}再见!${NC}"
