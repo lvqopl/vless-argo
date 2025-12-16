@@ -23,7 +23,7 @@ is_installed() {
 # 主菜单
 show_menu() {
     clear
-    echo -e "${BLUE╔════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}╔════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║   VLESS + Argo Tunnel 管理面板   ║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════╝${NC}"
     echo ""
@@ -62,7 +62,7 @@ show_menu() {
 # 安装函数
 install_system() {
     clear
-    echo -e "${GREEN╔════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}╔════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║      开始安装 VLESS + Argo       ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════╝${NC}"
     echo ""
@@ -164,23 +164,23 @@ EOF
     echo -e "${GREEN}✓ 完成${NC}"
     
     echo -e "${YELLOW}[6/7] 配置监控服务...${NC}"
-    cat > /usr/local/bin/vless_monitor.sh << 'EOF'
+    cat > /usr/local/bin/vless_monitor.sh << 'MONITOR_EOF'
 #!/bin/bash
 for svc in xray cloudflared; do
     systemctl is-active --quiet $svc || systemctl restart $svc
 done
-EOF
+MONITOR_EOF
     chmod +x /usr/local/bin/vless_monitor.sh
     
-    cat > /etc/systemd/system/vless-monitor.service << 'EOF'
+    cat > /etc/systemd/system/vless-monitor.service << 'SERVICE_EOF'
 [Unit]
 Description=VLESS Monitor
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/vless_monitor.sh
-EOF
+SERVICE_EOF
     
-    cat > /etc/systemd/system/vless-monitor.timer << 'EOF'
+    cat > /etc/systemd/system/vless-monitor.timer << 'TIMER_EOF'
 [Unit]
 Description=VLESS Monitor Timer
 [Timer]
@@ -188,7 +188,7 @@ OnBootSec=30sec
 OnUnitActiveSec=2min
 [Install]
 WantedBy=timers.target
-EOF
+TIMER_EOF
     
     systemctl daemon-reload
     systemctl enable vless-monitor.timer >/dev/null 2>&1
@@ -204,13 +204,16 @@ EOF
         domain=$(journalctl -u cloudflared -n 100 --no-pager 2>/dev/null | grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1 | sed 's|https://||')
     fi
     
-    link_std="vless://${UUID}@${domain:443?encryption=none&security=tls&type=ws&host=${domain}&path=%2Fvless#ArgoVLESS"
+    link_std="vless://${UUID}@${domain}:443?encryption=none&security=tls&type=ws&host=${domain}&path=%2Fvless#ArgoVLESS"
     link_opt="vless://${UUID}@${PREFERRED_IP}:443?encryption=none&security=tls&sni=${domain}&fp=chrome&alpn=h3%2Ch2%2Chttp%2F1.1&type=ws&host=${domain}&path=%2Fvless#ArgoVLESS-优选"
     
-    cat > $NODE_FILE << EOF
+    cat > $NODE_FILE << 'NODE_EOF'
 ═══════════════════════════════════
     VLESS + Argo 节点信息
 ═══════════════════════════════════
+NODE_EOF
+    
+    cat >> $NODE_FILE << EOF
 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 【基本信息】
@@ -246,7 +249,7 @@ EOF
     
     echo -e "${GREEN}✓ 完成${NC}"
     echo ""
-    echo -e "${GREEN╔════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}╔════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║          安装成功！               ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════╝${NC}"
     echo ""
