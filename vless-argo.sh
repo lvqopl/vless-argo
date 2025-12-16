@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # VLESS + Argo Tunnel 一键安装脚本 (适用于 LXC Debian)
-# 包含 systemd timer 服务监控、自动日志管理和完整的管理界面
+# 版本: 2.0 - 支持固定隧道域名配置和优选域名
 
 # 颜色定义
 RED='\033[0;31m'
@@ -23,6 +23,8 @@ echo -e "${GREEN}================================${NC}"
 UUID=$(cat /proc/sys/kernel/random/uuid)
 ARGO_TOKEN=""
 ARGO_DOMAIN=""
+CUSTOM_DOMAIN=""
+PREFERRED_IP="cf.877774.xyz"
 NODE_INFO_FILE="/root/vless_node_info.txt"
 
 # 安装必要的软件包
@@ -97,11 +99,15 @@ echo -e "${YELLOW}[6/7] 配置 Cloudflared Argo Tunnel...${NC}"
 # 询问用户是否有 Argo Token
 echo -e "${GREEN}请选择 Argo Tunnel 配置方式:${NC}"
 echo "1) 使用临时隧道 (自动获取域名，无需 Token)"
-echo "2) 使用固定隧道 (需要 Cloudflare Argo Token)"
+echo "2) 使用固定隧道 (需要 Cloudflare Argo Token 和域名)"
 read -p "请输入选项 [1/2]: " ARGO_CHOICE
 
 if [[ "$ARGO_CHOICE" == "2" ]]; then
     read -p "请输入你的 Argo Tunnel Token: " ARGO_TOKEN
+    read -p "请输入你的固定隧道域名 (例如: tunnel.example.com): " CUSTOM_DOMAIN
+    
+    # 去除可能的协议前缀
+    CUSTOM_DOMAIN=$(echo "$CUSTOM_DOMAIN" | sed 's|https\?://||')
     
     cat > /etc/systemd/system/cloudflared.service << EOF
 [Unit]
@@ -145,12 +151,10 @@ echo -e "${YELLOW}[7/7] 配置服务监控和自动重启 (systemd timer)...${NC
 cat > /usr/local/bin/vless_monitor.sh << 'MONITOR_EOF'
 #!/bin/bash
 
-# 日志文件配置
 LOG_FILE="/var/log/vless_monitor.log"
-MAX_LOG_SIZE=5242880  # 5MB
+MAX_LOG_SIZE=5242880
 MAX_OLD_LOGS=2
 
-# 日志轮转函数
 rotate_log() {
     if [ -f "$LOG_FILE" ]; then
         local size=$(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE" 2>/dev/null)
@@ -225,7 +229,7 @@ MONITOR_EOF
 
 chmod +x /usr/local/bin/vless_monitor.sh
 
-# 创建 systemd service 文件
+# 创建 systemd service 和 timer 文件
 cat > /etc/systemd/system/vless-monitor.service << 'SERVICE_EOF'
 [Unit]
 Description=VLESS Argo Monitor Service
@@ -241,7 +245,6 @@ StandardError=journal
 WantedBy=multi-user.target
 SERVICE_EOF
 
-# 创建 systemd timer 文件
 cat > /etc/systemd/system/vless-monitor.timer << 'TIMER_EOF'
 [Unit]
 Description=VLESS Argo Monitor Timer
@@ -260,7 +263,7 @@ systemctl daemon-reload
 systemctl enable vless-monitor.timer
 systemctl start vless-monitor.timer
 
-# 创建管理脚本（包含卸载功能）
+# 创建管理脚本
 cat > /usr/local/bin/vless_manage.sh << 'MANAGE_EOF'
 #!/bin/bash
 
@@ -313,7 +316,7 @@ restart_services() {
 
 show_logs() {
     echo -e "${YELLOW}最近 50 条监控日志:${NC}"
-    tail -50 /var/log/vless_monitor.log
+    tail -50 /var/log/vless_monitor.log 2>/dev/null || echo "日志文件不存在"
     echo ""
     echo -e "${YELLOW}最近 20 条 systemd 日志:${NC}"
     journalctl -u vless-monitor.service -n 20 --no-pager
@@ -495,6 +498,8 @@ if [[ "$ARGO_CHOICE" == "1" ]]; then
         echo "尝试获取域名... ($i/3)"
         sleep 3
     done
+else
+    ARGO_DOMAIN="$CUSTOM_DOMAIN"
 fi
 
 /usr/local/bin/vless_monitor.sh
@@ -508,7 +513,7 @@ VLESS + Argo Tunnel 节点信息
 
 【基础配置】
 UUID: ${UUID}
-端口: 8080
+本地端口: 8080
 路径: /vless
 传输协议: WebSocket
 加密: none
@@ -517,34 +522,64 @@ TLS: 启用 (通过 Cloudflare)
 EOF
 
 if [[ -n "$ARGO_DOMAIN" ]]; then
-    VLESS_LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${ARGO_DOMAIN}&path=%2Fvless#ArgoVLESS"
+    # 生成标准连接链接
+    VLESS_LINK_STANDARD="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${ARGO_DOMAIN}&path=%2Fvless#ArgoVLESS"
+    
+    # 生成带优选 IP 的完整连接链接
+    VLESS_LINK_OPTIMIZED="vless://${UUID}@${PREFERRED_IP}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&fp=chrome&alpn=h3%2Ch2%2Chttp%2F1.1&insecure=0&allowInsecure=0&type=ws&host=${ARGO_DOMAIN}&path=%2Fvless#ArgoVLESS-优选"
+    
     cat >> $NODE_INFO_FILE << EOF
 【Argo Tunnel 信息】
-域名: ${ARGO_DOMAIN}
-类型: 临时隧道
+实际域名: ${ARGO_DOMAIN}
+优选地址: ${PREFERRED_IP}
+$([ "$ARGO_CHOICE" == "1" ] && echo "类型: 临时隧道" || echo "类型: 固定隧道")
 
-【VLESS 连接链接】
-${VLESS_LINK}
+【VLESS 连接链接 - 标准版】
+${VLESS_LINK_STANDARD}
 
-【客户端配置】
+【VLESS 连接链接 - 优选 IP 版（推荐）】
+${VLESS_LINK_OPTIMIZED}
+
+【客户端配置 - 标准版】
 服务器地址: ${ARGO_DOMAIN}
 端口: 443
 UUID: ${UUID}
 传输协议: WebSocket
 WebSocket 路径: /vless
 TLS: 开启
+跳过证书验证: 关闭
+
+【客户端配置 - 优选 IP 版（速度更快）】
+服务器地址: ${PREFERRED_IP}
+端口: 443
+UUID: ${UUID}
+传输协议: WebSocket
+WebSocket 路径: /vless
+SNI/Host: ${ARGO_DOMAIN}
+TLS: 开启
+指纹: chrome
+ALPN: h3,h2,http/1.1
+跳过证书验证: 关闭
+允许不安全: 关闭
 
 EOF
+    
     if command -v qrencode &> /dev/null; then
-        echo "【二维码】" >> $NODE_INFO_FILE
-        qrencode -t ANSIUTF8 "${VLESS_LINK}" >> $NODE_INFO_FILE 2>/dev/null
+        echo "【标准版二维码】" >> $NODE_INFO_FILE
+        qrencode -t ANSIUTF8 "${VLESS_LINK_STANDARD}" >> $NODE_INFO_FILE 2>/dev/null
+        echo "" >> $NODE_INFO_FILE
+        echo "【优选 IP 版二维码】" >> $NODE_INFO_FILE
+        qrencode -t ANSIUTF8 "${VLESS_LINK_OPTIMIZED}" >> $NODE_INFO_FILE 2>/dev/null
         echo "" >> $NODE_INFO_FILE
     fi
 else
     cat >> $NODE_INFO_FILE << EOF
 【Argo Tunnel 信息】
-类型: 固定隧道 (使用 Token)
-查看域名: journalctl -u cloudflared -n 50 | grep trycloudflare.com
+类型: 固定隧道
+注意: 未能自动获取域名，请手动配置
+
+查看域名命令:
+journalctl -u cloudflared -n 50 | grep -E "trycloudflare|registered"
 
 EOF
 fi
@@ -556,7 +591,23 @@ cat >> $NODE_INFO_FILE << EOF
 查看节点信息: cat $NODE_INFO_FILE
 管理界面: vless_manage.sh
 查看 Argo 域名: journalctl -u cloudflared -n 50 | grep trycloudflare.com
+重启服务: systemctl restart xray cloudflared
 
+【注意事项】
+1. 临时隧道域名会在重启后变化，建议使用固定隧道
+2. 优选 IP 版本可提供更好的连接速度
+3. 默认优选地址: ${PREFERRED_IP}
+4. 可在客户端自行测试其他优选 IP
+
+【推荐优选 IP 列表】
+- cf.877774.xyz (默认)
+- 104.16.0.0/12
+- 162.159.0.0/16
+- 172.64.0.0/13
+
+================================
+脚本版本: v2.0
+生成日期: $(date '+%Y-%m-%d')
 ================================
 EOF
 
@@ -574,4 +625,4 @@ echo ""
 echo -e "${GREEN✓ 节点信息已保存: ${NODE_INFO_FILE}${NC}"
 echo -e "${GREEN}✓ 管理命令: vless_manage.sh${NC}"
 echo ""
-echo -e "${GREEN}安装完成！${NC}"
+echo -e "${GREEN}安装完成！推荐使用优选 IP 版本获得更好的连接速度！${NC}"
