@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # VLESS + Argo Tunnel 一键安装脚本 (适用于 LXC Debian)
-# 包含 systemd timer 服务监控和自动日志管理
+# 包含 systemd timer 服务监控、自动日志管理和完整的管理界面
 
 # 颜色定义
 RED='\033[0;31m'
@@ -23,11 +23,12 @@ echo -e "${GREEN}================================${NC}"
 UUID=$(cat /proc/sys/kernel/random/uuid)
 ARGO_TOKEN=""
 ARGO_DOMAIN=""
+NODE_INFO_FILE="/root/vless_node_info.txt"
 
 # 安装必要的软件包
 echo -e "${YELLOW}[1/7] 更新系统并安装依赖...${NC}"
 apt-get update -y
-apt-get install -y curl wget unzip
+apt-get install -y curl wget unzip qrencode
 
 # 下载并安装 Xray
 echo -e "${YELLOW}[2/7] 下载并安装 Xray...${NC}"
@@ -139,79 +140,55 @@ systemctl daemon-reload
 systemctl enable cloudflared
 systemctl start cloudflared
 
-# 创建服务监控脚本 - 包含改进的日志管理
+# 创建服务监控脚本
 echo -e "${YELLOW}[7/7] 配置服务监控和自动重启 (systemd timer)...${NC}"
 cat > /usr/local/bin/vless_monitor.sh << 'MONITOR_EOF'
 #!/bin/bash
 
 # 日志文件配置
 LOG_FILE="/var/log/vless_monitor.log"
-MAX_LOG_SIZE=5242880  # 5MB (5 * 1024 * 1024)
-MAX_OLD_LOGS=2        # 保留最多 2 个旧日志文件
+MAX_LOG_SIZE=5242880  # 5MB
+MAX_OLD_LOGS=2
 
-# 改进的日志轮转函数
+# 日志轮转函数
 rotate_log() {
     if [ -f "$LOG_FILE" ]; then
         local size=$(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE" 2>/dev/null)
         if [ "$size" -gt "$MAX_LOG_SIZE" ]; then
-            # 删除最旧的日志
-            if [ -f "$LOG_FILE.2" ]; then
-                rm -f "$LOG_FILE.2"
-            fi
-            
-            # 日志文件轮转
-            if [ -f "$LOG_FILE.1" ]; then
-                mv "$LOG_FILE.1" "$LOG_FILE.2"
-            fi
-            
-            if [ -f "$LOG_FILE.old" ]; then
-                mv "$LOG_FILE.old" "$LOG_FILE.1"
-            fi
-            
-            # 当前日志改名
+            [ -f "$LOG_FILE.2" ] && rm -f "$LOG_FILE.2"
+            [ -f "$LOG_FILE.1" ] && mv "$LOG_FILE.1" "$LOG_FILE.2"
+            [ -f "$LOG_FILE.old" ] && mv "$LOG_FILE.old" "$LOG_FILE.1"
             mv "$LOG_FILE" "$LOG_FILE.old"
             touch "$LOG_FILE"
-            
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 日志已轮转，旧日志已备份" >> "$LOG_FILE"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 日志已轮转" >> "$LOG_FILE"
         fi
     else
         touch "$LOG_FILE"
     fi
     
-    # 清理超过指定数量的旧日志
     local log_count=$(ls -1 ${LOG_FILE}.* 2>/dev/null | wc -l)
     if [ "$log_count" -gt "$MAX_OLD_LOGS" ]; then
         ls -1t ${LOG_FILE}.* 2>/dev/null | tail -n +$((MAX_OLD_LOGS + 1)) | xargs rm -f
     fi
 }
 
-# 写日志函数
 log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
-# 检查并重启服务函数
 check_and_restart() {
     local service=$1
-    
     if ! systemctl is-active --quiet $service; then
         log_message "警告: $service 服务未运行，正在重启..."
         systemctl restart $service
         sleep 3
-        
-        if systemctl is-active --quiet $service; then
-            log_message "成功: $service 服务已重启"
-        else
-            log_message "错误: $service 服务重启失败"
-        fi
+        systemctl is-active --quiet $service && log_message "成功: $service 服务已重启" || log_message "错误: $service 服务重启失败"
     fi
 }
 
-# 检查端口是否监听
 check_port() {
     local port=$1
     local service=$2
-    
     if ! ss -tuln 2>/dev/null | grep -q ":$port "; then
         log_message "警告: 端口 $port 未监听，$service 可能异常"
         return 1
@@ -219,47 +196,27 @@ check_port() {
     return 0
 }
 
-# 主监控逻辑
 rotate_log
-
-# 检查 Xray 服务
 check_and_restart xray
-
-# 检查 Xray 端口
-if ! check_port 8080 "Xray"; then
-    log_message "尝试重启 Xray 服务..."
-    systemctl restart xray
-fi
-
-# 检查 Cloudflared 服务
+check_port 8080 "Xray" || systemctl restart xray
 check_and_restart cloudflared
 
-# 检查进程数量（防止进程僵死）
-XRAY_PROCESS=$(pgrep -c xray)
-if [ "$XRAY_PROCESS" -eq 0 ]; then
-    log_message "警告: Xray 进程不存在，强制重启"
-    systemctl restart xray
-elif [ "$XRAY_PROCESS" -gt 3 ]; then
-    log_message "警告: Xray 进程数量异常 ($XRAY_PROCESS)，重启服务"
-    systemctl restart xray
-fi
+for proc in xray cloudflared; do
+    count=$(pgrep -c $proc)
+    if [ "$count" -eq 0 ]; then
+        log_message "警告: $proc 进程不存在，强制重启"
+        systemctl restart $proc
+    elif [ "$count" -gt 3 ]; then
+        log_message "警告: $proc 进程数量异常 ($count)，重启服务"
+        systemctl restart $proc
+    fi
+done
 
-CLOUDFLARED_PROCESS=$(pgrep -c cloudflared)
-if [ "$CLOUDFLARED_PROCESS" -eq 0 ]; then
-    log_message "警告: Cloudflared 进程不存在，强制重启"
-    systemctl restart cloudflared
-elif [ "$CLOUDFLARED_PROCESS" -gt 3 ]; then
-    log_message "警告: Cloudflared 进程数量异常 ($CLOUDFLARED_PROCESS)，重启服务"
-    systemctl restart cloudflared
-fi
-
-# 内存检查（可选，防止内存泄漏）
 TOTAL_MEM=$(free -m | awk 'NR==2{print $2}')
 USED_MEM=$(free -m | awk 'NR==2{print $3}')
 MEM_USAGE=$(awk "BEGIN {printf \"%.0f\", ($USED_MEM/$TOTAL_MEM)*100}")
-
 if [ "$MEM_USAGE" -gt 90 ]; then
-    log_message "警告: 内存使用率过高 ($MEM_USAGE%)，记录状态"
+    log_message "警告: 内存使用率过高 ($MEM_USAGE%)"
     ps aux --sort=-%mem | head -10 >> "$LOG_FILE"
 fi
 
@@ -284,7 +241,7 @@ StandardError=journal
 WantedBy=multi-user.target
 SERVICE_EOF
 
-# 创建 systemd timer 文件 - 开机立即启动，每分钟执行
+# 创建 systemd timer 文件
 cat > /etc/systemd/system/vless-monitor.timer << 'TIMER_EOF'
 [Unit]
 Description=VLESS Argo Monitor Timer
@@ -299,12 +256,11 @@ Unit=vless-monitor.service
 WantedBy=timers.target
 TIMER_EOF
 
-# 重载 systemd 并启动 timer
 systemctl daemon-reload
 systemctl enable vless-monitor.timer
 systemctl start vless-monitor.timer
 
-# 创建管理脚本
+# 创建管理脚本（包含卸载功能）
 cat > /usr/local/bin/vless_manage.sh << 'MANAGE_EOF'
 #!/bin/bash
 
@@ -325,8 +281,10 @@ show_menu() {
     echo "6) 手动运行监控检查"
     echo "7) 查看 Timer 状态"
     echo "8) 查看日志文件信息"
-    echo "9) 停止所有服务"
-    echo "10) 启动所有服务"
+    echo "9) 查看节点信息"
+    echo "10) 停止所有服务"
+    echo "11) 启动所有服务"
+    echo "12) 完全卸载"
     echo "0) 退出"
     echo ""
 }
@@ -347,8 +305,7 @@ check_status() {
 
 restart_services() {
     echo -e "${YELLOW}正在重启服务...${NC}"
-    systemctl restart xray
-    systemctl restart cloudflared
+    systemctl restart xray cloudflared
     sleep 3
     echo -e "${GREEN}服务已重启${NC}"
     check_status
@@ -413,27 +370,96 @@ show_log_info() {
     fi
 }
 
+show_node_info() {
+    if [ -f /root/vless_node_info.txt ]; then
+        cat /root/vless_node_info.txt
+    else
+        echo -e "${RED}节点信息文件不存在${NC}"
+    fi
+}
+
 stop_services() {
     echo -e "${YELLOW}正在停止服务...${NC}"
-    systemctl stop xray
-    systemctl stop cloudflared
-    systemctl stop vless-monitor.timer
+    systemctl stop xray cloudflared vless-monitor.timer
     echo -e "${GREEN}服务已停止${NC}"
 }
 
 start_services() {
     echo -e "${YELLOW}正在启动服务...${NC}"
-    systemctl start xray
-    systemctl start cloudflared
-    systemctl start vless-monitor.timer
+    systemctl start xray cloudflared vless-monitor.timer
     sleep 3
     echo -e "${GREEN}服务已启动${NC}"
     check_status
 }
 
+uninstall_all() {
+    echo -e "${RED}================================${NC}"
+    echo -e "${RED}警告：卸载操作${NC}"
+    echo -e "${RED}================================${NC}"
+    echo -e "${YELLOW}此操作将完全卸载 VLESS 和 Argo Tunnel${NC}"
+    echo -e "${YELLOW}包括所有配置文件、日志和服务${NC}"
+    echo ""
+    read -p "确定要卸载吗？输入 'yes' 确认: " confirm
+    
+    if [[ "$confirm" != "yes" ]]; then
+        echo -e "${GREEN}已取消卸载${NC}"
+        return
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}[1/8] 停止服务...${NC}"
+    systemctl stop vless-monitor.timer vless-monitor.service xray cloudflared 2>/dev/null
+    echo -e "${GREEN}✓ 服务已停止${NC}"
+    
+    echo -e "${YELLOW}[2/8] 禁用服务自启动...${NC}"
+    systemctl disable vless-monitor.timer vless-monitor.service xray cloudflared 2>/dev/null
+    echo -e "${GREEN}✓ 已禁用自启动${NC}"
+    
+    echo -e "${YELLOW}[3/8] 删除 systemd 服务文件...${NC}"
+    rm -f /etc/systemd/system/vless-monitor.timer
+    rm -f /etc/systemd/system/vless-monitor.service
+    rm -f /etc/systemd/system/cloudflared.service
+    systemctl daemon-reload
+    echo -e "${GREEN}✓ systemd 文件已删除${NC}"
+    
+    echo -e "${YELLOW}[4/8] 卸载 Xray...${NC}"
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge 2>/dev/null
+    rm -rf /usr/local/bin/xray /usr/local/etc/xray /var/log/xray /usr/local/share/xray
+    echo -e "${GREEN}✓ Xray 已卸载${NC}"
+    
+    echo -e "${YELLOW}[5/8] 删除 Cloudflared...${NC}"
+    rm -f /usr/local/bin/cloudflared
+    rm -rf /root/.cloudflared
+    echo -e "${GREEN}✓ Cloudflared 已删除${NC}"
+    
+    echo -e "${YELLOW}[6/8] 删除脚本文件...${NC}"
+    rm -f /usr/local/bin/vless_monitor.sh
+    echo -e "${GREEN}✓ 脚本文件已删除${NC}"
+    
+    echo -e "${YELLOW}[7/8] 删除日志和配置文件...${NC}"
+    rm -f /var/log/vless_monitor.log*
+    rm -f /root/vless_node_info.txt
+    echo -e "${GREEN}✓ 日志和配置已删除${NC}"
+    
+    echo -e "${YELLOW}[8/8] 清理残留文件...${NC}"
+    rm -rf /etc/systemd/system/xray.service /etc/systemd/system/xray@.service
+    systemctl daemon-reload
+    echo -e "${GREEN}✓ 清理完成${NC}"
+    
+    echo ""
+    echo -e "${GREEN}================================${NC}"
+    echo -e "${GREEN}卸载完成！${NC}"
+    echo -e "${GREEN}================================${NC}"
+    echo ""
+    echo "本管理脚本将在 3 秒后自动删除..."
+    sleep 3
+    rm -f /usr/local/bin/vless_manage.sh
+    exit 0
+}
+
 while true; do
     show_menu
-    read -p "请选择操作 [0-10]: " choice
+    read -p "请选择操作 [0-12]: " choice
     case $choice in
         1) check_status ;;
         2) restart_services ;;
@@ -443,8 +469,10 @@ while true; do
         6) run_monitor ;;
         7) show_timer_status ;;
         8) show_log_info ;;
-        9) stop_services ;;
-        10) start_services ;;
+        9) show_node_info ;;
+        10) stop_services ;;
+        11) start_services ;;
+        12) uninstall_all ;;
         0) echo "退出"; exit 0 ;;
         *) echo -e "${RED}无效选项${NC}" ;;
     esac
@@ -455,67 +483,95 @@ MANAGE_EOF
 
 chmod +x /usr/local/bin/vless_manage.sh
 
-# 等待服务启动
+# 等待服务启动并获取域名
+sleep 5
+echo -e "${YELLOW}正在获取 Argo 隧道信息...${NC}"
 sleep 5
 
-# 获取 Argo 域名
-echo -e "${YELLOW}正在获取 Argo 隧道信息...${NC}"
-sleep 3
-
 if [[ "$ARGO_CHOICE" == "1" ]]; then
-    ARGO_DOMAIN=$(journalctl -u cloudflared -n 50 --no-pager | grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1 | sed 's/https:\/\///')
+    for i in {1..3}; do
+        ARGO_DOMAIN=$(journalctl -u cloudflared -n 100 --no-pager | grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1 | sed 's/https:\/\///')
+        [[ -n "$ARGO_DOMAIN" ]] && break
+        echo "尝试获取域名... ($i/3)"
+        sleep 3
+    done
 fi
 
-# 运行一次监控检查
 /usr/local/bin/vless_monitor.sh
 
-# 显示配置信息
+# 生成节点信息文件
+cat > $NODE_INFO_FILE << EOF
+================================
+VLESS + Argo Tunnel 节点信息
+================================
+生成时间: $(date '+%Y-%m-%d %H:%M:%S')
+
+【基础配置】
+UUID: ${UUID}
+端口: 8080
+路径: /vless
+传输协议: WebSocket
+加密: none
+TLS: 启用 (通过 Cloudflare)
+
+EOF
+
+if [[ -n "$ARGO_DOMAIN" ]]; then
+    VLESS_LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${ARGO_DOMAIN}&path=%2Fvless#ArgoVLESS"
+    cat >> $NODE_INFO_FILE << EOF
+【Argo Tunnel 信息】
+域名: ${ARGO_DOMAIN}
+类型: 临时隧道
+
+【VLESS 连接链接】
+${VLESS_LINK}
+
+【客户端配置】
+服务器地址: ${ARGO_DOMAIN}
+端口: 443
+UUID: ${UUID}
+传输协议: WebSocket
+WebSocket 路径: /vless
+TLS: 开启
+
+EOF
+    if command -v qrencode &> /dev/null; then
+        echo "【二维码】" >> $NODE_INFO_FILE
+        qrencode -t ANSIUTF8 "${VLESS_LINK}" >> $NODE_INFO_FILE 2>/dev/null
+        echo "" >> $NODE_INFO_FILE
+    fi
+else
+    cat >> $NODE_INFO_FILE << EOF
+【Argo Tunnel 信息】
+类型: 固定隧道 (使用 Token)
+查看域名: journalctl -u cloudflared -n 50 | grep trycloudflare.com
+
+EOF
+fi
+
+cat >> $NODE_INFO_FILE << EOF
+================================
+【管理命令】
+================================
+查看节点信息: cat $NODE_INFO_FILE
+管理界面: vless_manage.sh
+查看 Argo 域名: journalctl -u cloudflared -n 50 | grep trycloudflare.com
+
+================================
+EOF
+
 echo ""
 echo -e "${GREEN}================================${NC}"
 echo -e "${GREEN}安装完成！${NC}"
 echo -e "${GREEN}================================${NC}"
 echo ""
-echo -e "${YELLOW}VLESS 配置信息:${NC}"
-echo -e "UUID: ${GREEN}${UUID}${NC}"
-echo -e "端口: ${GREEN}8080${NC}"
-echo -e "路径: ${GREEN}/vless${NC}"
-echo -e "传输协议: ${GREEN}WebSocket${NC}"
+cat $NODE_INFO_FILE
 echo ""
-
-if [[ -n "$ARGO_DOMAIN" ]]; then
-    echo -e "${YELLOW}Argo Tunnel 信息:${NC}"
-    echo -e "域名: ${GREEN}${ARGO_DOMAIN}${NC}"
-    echo ""
-    echo -e "${YELLOW}VLESS 连接信息:${NC}"
-    echo -e "${GREEN}vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${ARGO_DOMAIN}&path=%2Fvless#ArgoVLESS${NC}"
-else
-    echo -e "${YELLOW}注意: 如使用固定隧道，请在 Cloudflare Dashboard 中配置${NC}"
-    echo ""
-    echo -e "${YELLOW}临时隧道域名获取命令:${NC}"
-    echo -e "${GREEN}journalctl -u cloudflared -n 50 | grep trycloudflare.com${NC}"
-fi
-
+echo -e "${YELLOW}监控配置:${NC}"
+echo "✓ 开机 10 秒后首次运行，之后每 1 分钟检查"
+echo "✓ 日志自动管理: 5MB 自动轮转，保留 2 个旧日志"
 echo ""
-echo -e "${YELLOW}自动监控已配置 (systemd timer):${NC}"
-echo -e "✓ 开机 10 秒后首次运行"
-echo -e "✓ 之后每 1 分钟自动检查服务状态"
-echo -e "✓ 服务异常时自动重启"
-echo -e "✓ 监控日志: /var/log/vless_monitor.log"
-echo -e "✓ 日志自动管理: 超过 5MB 自动轮转"
-echo -e "✓ 保留旧日志: 最多 2 个"
+echo -e "${GREEN✓ 节点信息已保存: ${NODE_INFO_FILE}${NC}"
+echo -e "${GREEN}✓ 管理命令: vless_manage.sh${NC}"
 echo ""
-echo -e "${YELLOW}管理命令:${NC}"
-echo -e "快捷管理: ${GREEN}vless_manage.sh${NC}"
-echo -e "查看 timer 状态: ${GREEN}systemctl status vless-monitor.timer${NC}"
-echo -e "查看下次运行时间: ${GREEN}systemctl list-timers vless-monitor.timer${NC}"
-echo -e "查看监控日志: ${GREEN}journalctl -u vless-monitor.service -f${NC}"
-echo -e "手动运行监控: ${GREEN}/usr/local/bin/vless_monitor.sh${NC}"
-echo -e "查看日志大小: ${GREEN}du -h /var/log/vless_monitor.log*${NC}"
-echo ""
-echo -e "${YELLOW}Timer 控制命令:${NC}"
-echo "systemctl start vless-monitor.timer   # 启动定时器"
-echo "systemctl stop vless-monitor.timer    # 停止定时器"
-echo "systemctl restart vless-monitor.timer # 重启定时器"
-echo ""
-echo -e "${GREEN}安装脚本执行完毕！${NC}"
-echo -e "${GREEN}systemd timer 监控已启动，将自动维护服务运行状态${NC}"
+echo -e "${GREEN}安装完成！${NC}"
