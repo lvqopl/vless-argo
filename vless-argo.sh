@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # VLESS + Argo Tunnel 一键安装脚本 (适用于 LXC Debian)
-# 包含 systemd timer 服务监控功能
+# 包含 systemd timer 服务监控和自动日志管理
 
 # 颜色定义
 RED='\033[0;31m'
@@ -139,23 +139,49 @@ systemctl daemon-reload
 systemctl enable cloudflared
 systemctl start cloudflared
 
-# 创建服务监控脚本
+# 创建服务监控脚本 - 包含改进的日志管理
 echo -e "${YELLOW}[7/7] 配置服务监控和自动重启 (systemd timer)...${NC}"
 cat > /usr/local/bin/vless_monitor.sh << 'MONITOR_EOF'
 #!/bin/bash
 
-# 日志文件
+# 日志文件配置
 LOG_FILE="/var/log/vless_monitor.log"
-MAX_LOG_SIZE=10485760  # 10MB
+MAX_LOG_SIZE=5242880  # 5MB (5 * 1024 * 1024)
+MAX_OLD_LOGS=2        # 保留最多 2 个旧日志文件
 
-# 日志轮转函数
+# 改进的日志轮转函数
 rotate_log() {
     if [ -f "$LOG_FILE" ]; then
         local size=$(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE" 2>/dev/null)
         if [ "$size" -gt "$MAX_LOG_SIZE" ]; then
+            # 删除最旧的日志
+            if [ -f "$LOG_FILE.2" ]; then
+                rm -f "$LOG_FILE.2"
+            fi
+            
+            # 日志文件轮转
+            if [ -f "$LOG_FILE.1" ]; then
+                mv "$LOG_FILE.1" "$LOG_FILE.2"
+            fi
+            
+            if [ -f "$LOG_FILE.old" ]; then
+                mv "$LOG_FILE.old" "$LOG_FILE.1"
+            fi
+            
+            # 当前日志改名
             mv "$LOG_FILE" "$LOG_FILE.old"
             touch "$LOG_FILE"
+            
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] 日志已轮转，旧日志已备份" >> "$LOG_FILE"
         fi
+    else
+        touch "$LOG_FILE"
+    fi
+    
+    # 清理超过指定数量的旧日志
+    local log_count=$(ls -1 ${LOG_FILE}.* 2>/dev/null | wc -l)
+    if [ "$log_count" -gt "$MAX_OLD_LOGS" ]; then
+        ls -1t ${LOG_FILE}.* 2>/dev/null | tail -n +$((MAX_OLD_LOGS + 1)) | xargs rm -f
     fi
 }
 
@@ -258,15 +284,15 @@ StandardError=journal
 WantedBy=multi-user.target
 SERVICE_EOF
 
-# 创建 systemd timer 文件
+# 创建 systemd timer 文件 - 开机立即启动，每分钟执行
 cat > /etc/systemd/system/vless-monitor.timer << 'TIMER_EOF'
 [Unit]
 Description=VLESS Argo Monitor Timer
 Requires=vless-monitor.service
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
+OnBootSec=10sec
+OnUnitActiveSec=1min
 Unit=vless-monitor.service
 
 [Install]
@@ -298,8 +324,9 @@ show_menu() {
     echo "5) 查看配置信息"
     echo "6) 手动运行监控检查"
     echo "7) 查看 Timer 状态"
-    echo "8) 停止所有服务"
-    echo "9) 启动所有服务"
+    echo "8) 查看日志文件信息"
+    echo "9) 停止所有服务"
+    echo "10) 启动所有服务"
     echo "0) 退出"
     echo ""
 }
@@ -368,6 +395,24 @@ show_timer_status() {
     journalctl -u vless-monitor.service -n 10 --no-pager
 }
 
+show_log_info() {
+    echo -e "${YELLOW}=== 日志文件信息 ===${NC}"
+    if [ -f /var/log/vless_monitor.log ]; then
+        echo "当前日志大小: $(du -h /var/log/vless_monitor.log | cut -f1)"
+        echo "日志行数: $(wc -l < /var/log/vless_monitor.log)"
+        echo ""
+        echo "所有日志文件:"
+        ls -lh /var/log/vless_monitor.log* 2>/dev/null
+        echo ""
+        echo -e "${YELLOW}日志管理配置:${NC}"
+        echo "- 单个日志最大: 5MB"
+        echo "- 保留旧日志: 2 个"
+        echo "- 自动轮转: 启用"
+    else
+        echo -e "${RED}日志文件不存在${NC}"
+    fi
+}
+
 stop_services() {
     echo -e "${YELLOW}正在停止服务...${NC}"
     systemctl stop xray
@@ -388,7 +433,7 @@ start_services() {
 
 while true; do
     show_menu
-    read -p "请选择操作 [0-9]: " choice
+    read -p "请选择操作 [0-10]: " choice
     case $choice in
         1) check_status ;;
         2) restart_services ;;
@@ -397,8 +442,9 @@ while true; do
         5) show_config ;;
         6) run_monitor ;;
         7) show_timer_status ;;
-        8) stop_services ;;
-        9) start_services ;;
+        8) show_log_info ;;
+        9) stop_services ;;
+        10) start_services ;;
         0) echo "退出"; exit 0 ;;
         *) echo -e "${RED}无效选项${NC}" ;;
     esac
@@ -451,10 +497,12 @@ fi
 
 echo ""
 echo -e "${YELLOW}自动监控已配置 (systemd timer):${NC}"
-echo -e "✓ 开机 2 分钟后首次运行"
-echo -e "✓ 之后每 5 分钟自动检查服务状态"
+echo -e "✓ 开机 10 秒后首次运行"
+echo -e "✓ 之后每 1 分钟自动检查服务状态"
 echo -e "✓ 服务异常时自动重启"
 echo -e "✓ 监控日志: /var/log/vless_monitor.log"
+echo -e "✓ 日志自动管理: 超过 5MB 自动轮转"
+echo -e "✓ 保留旧日志: 最多 2 个"
 echo ""
 echo -e "${YELLOW}管理命令:${NC}"
 echo -e "快捷管理: ${GREEN}vless_manage.sh${NC}"
@@ -462,6 +510,7 @@ echo -e "查看 timer 状态: ${GREEN}systemctl status vless-monitor.timer${NC}"
 echo -e "查看下次运行时间: ${GREEN}systemctl list-timers vless-monitor.timer${NC}"
 echo -e "查看监控日志: ${GREEN}journalctl -u vless-monitor.service -f${NC}"
 echo -e "手动运行监控: ${GREEN}/usr/local/bin/vless_monitor.sh${NC}"
+echo -e "查看日志大小: ${GREEN}du -h /var/log/vless_monitor.log*${NC}"
 echo ""
 echo -e "${YELLOW}Timer 控制命令:${NC}"
 echo "systemctl start vless-monitor.timer   # 启动定时器"
