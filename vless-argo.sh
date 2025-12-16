@@ -127,7 +127,7 @@ EOF
         read -p "输入固定域名: " custom_domain
         custom_domain=$(echo "$custom_domain" | sed 's|https\?://||')
         
-        cat > /etc/systemd/system/cloudflared.service << EOF
+        cat > /etc/systemd/system/cloudflared.service << CFEOF
 [Unit]
 Description=Cloudflare Tunnel
 After=network.target
@@ -140,9 +140,9 @@ RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
-EOF
+CFEOF
     else
-        cat > /etc/systemd/system/cloudflared.service << EOF
+        cat > /etc/systemd/system/cloudflared.service << 'CFEOF'
 [Unit]
 Description=Cloudflare Tunnel
 After=network.target
@@ -155,7 +155,7 @@ RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
-EOF
+CFEOF
     fi
     
     systemctl daemon-reload
@@ -164,23 +164,23 @@ EOF
     echo -e "${GREEN}✓ 完成${NC}"
     
     echo -e "${YELLOW}[6/7] 配置监控服务...${NC}"
-    cat > /usr/local/bin/vless_monitor.sh << 'MONITOR_EOF'
+    cat > /usr/local/bin/vless_monitor.sh << 'MONEOF'
 #!/bin/bash
 for svc in xray cloudflared; do
     systemctl is-active --quiet $svc || systemctl restart $svc
 done
-MONITOR_EOF
+MONEOF
     chmod +x /usr/local/bin/vless_monitor.sh
     
-    cat > /etc/systemd/system/vless-monitor.service << 'SERVICE_EOF'
+    cat > /etc/systemd/system/vless-monitor.service << 'SVCEOF'
 [Unit]
 Description=VLESS Monitor
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/vless_monitor.sh
-SERVICE_EOF
+SVCEOF
     
-    cat > /etc/systemd/system/vless-monitor.timer << 'TIMER_EOF'
+    cat > /etc/systemd/system/vless-monitor.timer << 'TIMEOF'
 [Unit]
 Description=VLESS Monitor Timer
 [Timer]
@@ -188,7 +188,7 @@ OnBootSec=30sec
 OnUnitActiveSec=2min
 [Install]
 WantedBy=timers.target
-TIMER_EOF
+TIMEOF
     
     systemctl daemon-reload
     systemctl enable vless-monitor.timer >/dev/null 2>&1
@@ -204,16 +204,15 @@ TIMER_EOF
         domain=$(journalctl -u cloudflared -n 100 --no-pager 2>/dev/null | grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1 | sed 's|https://||')
     fi
     
+    # 生成连接链接
     link_std="vless://${UUID}@${domain}:443?encryption=none&security=tls&type=ws&host=${domain}&path=%2Fvless#ArgoVLESS"
     link_opt="vless://${UUID}@${PREFERRED_IP}:443?encryption=none&security=tls&sni=${domain}&fp=chrome&alpn=h3%2Ch2%2Chttp%2F1.1&type=ws&host=${domain}&path=%2Fvless#ArgoVLESS-优选"
     
-    cat > $NODE_FILE << 'NODE_EOF'
+    # 写入节点信息文件
+    cat > "$NODE_FILE" << NODEEOF
 ═══════════════════════════════════
     VLESS + Argo 节点信息
 ═══════════════════════════════════
-NODE_EOF
-    
-    cat >> $NODE_FILE << EOF
 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 【基本信息】
@@ -243,9 +242,9 @@ ALPN: h3,h2,http/1.1
 
 ═══════════════════════════════════
 管理: bash <(curl -Ls 你的脚本链接)
-查看: cat $NODE_FILE
+查看: cat ${NODE_FILE}
 ═══════════════════════════════════
-EOF
+NODEEOF
     
     echo -e "${GREEN}✓ 完成${NC}"
     echo ""
@@ -253,7 +252,7 @@ EOF
     echo -e "${GREEN}║          安装成功！               ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════╝${NC}"
     echo ""
-    cat $NODE_FILE
+    cat "$NODE_FILE"
     echo ""
     read -p "按回车返回主菜单..."
 }
@@ -269,9 +268,14 @@ uninstall_system() {
     systemctl stop vless-monitor.timer xray cloudflared 2>/dev/null
     systemctl disable vless-monitor.timer xray cloudflared 2>/dev/null
     
-    rm -rf /etc/systemd/system/{vless-monitor.*,cloudflared.service}
-    rm -rf /usr/local/bin/{xray,cloudflared,vless_monitor.sh}
-    rm -rf /usr/local/etc/xray /root/vless_node_info.txt
+    rm -rf /etc/systemd/system/vless-monitor.timer
+    rm -rf /etc/systemd/system/vless-monitor.service
+    rm -rf /etc/systemd/system/cloudflared.service
+    rm -rf /usr/local/bin/xray
+    rm -rf /usr/local/bin/cloudflared
+    rm -rf /usr/local/bin/vless_monitor.sh
+    rm -rf /usr/local/etc/xray
+    rm -rf /root/vless_node_info.txt
     
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge 2>/dev/null
     
@@ -323,7 +327,7 @@ while true; do
             5) show_node ;;
             6) show_domain ;;
             7) cat /usr/local/etc/xray/config.json 2>/dev/null; read -p "按回车..." ;;
-            8) tail -50 /var/log/syslog | grep -E "xray|cloudflared"; read -p "按回车..." ;;
+            8) journalctl -u xray -u cloudflared -n 50 --no-pager; read -p "按回车..." ;;
             9) edit_node ;;
             10) uninstall_system; install_system ;;
             11) uninstall_system ;;
