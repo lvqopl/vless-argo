@@ -6,7 +6,7 @@
 # Description: A comprehensive script for one-click deployment and management of 
 #              VLESS with Cloudflare Argo Tunnel. Supports Debian and Alpine Linux.
 # Author:      AI Assistant
-# Version:     1.3.0 (Alpine Fix)
+# Version:     1.3.1 (Alpine Complete Fix)
 #===============================================================================================
 
 # --- 颜色代码 ---
@@ -63,7 +63,6 @@ detect_os() {
         echo -e "${RED}无法检测操作系统类型${NC}"
         exit 1
     fi
-    echo -e "${GREEN}检测到系统: $OS_TYPE (服务管理: $SERVICE_MANAGER)${NC}"
 }
 
 #===============================================================================================
@@ -100,7 +99,7 @@ press_any_key() {
     read -r
 }
 
-# 生成UUID (Alpine没有xray命令时使用)
+# 生成UUID (通用函数)
 generate_uuid() {
     cat /proc/sys/kernel/random/uuid
 }
@@ -114,9 +113,11 @@ install_dependencies() {
     echo -e "${BLUE}正在更新软件包列表并安装依赖项...${NC}"
     
     if [ "$OS_TYPE" = "alpine" ]; then
-        apk update && apk add curl wget unzip bash > /dev/null 2>&1
+        apk update > /dev/null 2>&1
+        apk add curl wget unzip bash > /dev/null 2>&1
     else
-        apt-get update && apt-get install -y curl wget unzip > /dev/null 2>&1
+        apt-get update > /dev/null 2>&1
+        apt-get install -y curl wget unzip > /dev/null 2>&1
     fi
     
     if [ $? -ne 0 ]; then
@@ -132,39 +133,46 @@ install_xray() {
     
     if [ "$OS_TYPE" = "debian" ]; then
         # Debian/Ubuntu 使用官方安装脚本
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -s install
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -s install 2>&1 | grep -v "^error:"
         if [ ! -f "$XRAY_BINARY" ]; then
             echo -e "${RED}Xray 安装失败。${NC}"
             exit 1
         fi
-        CURRENT_UUID=$($XRAY_BINARY uuid)
     else
         # Alpine 手动下载安装
         ARCH=$(uname -m)
+        echo -e "${BLUE}检测到架构: ${ARCH}${NC}"
+        
         if [ "$ARCH" = "x86_64" ]; then
-            XRAY_DOWNLOAD_URL=$(curl -sL "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep "browser_download_url.*linux-64.zip" | cut -d '"' -f 4)
+            XRAY_DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
         elif [ "$ARCH" = "aarch64" ]; then
-            XRAY_DOWNLOAD_URL=$(curl -sL "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep "browser_download_url.*linux-arm64-v8a.zip" | cut -d '"' -f 4)
+            XRAY_DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip"
         else
             echo -e "${RED}不支持的架构: $ARCH${NC}"
             exit 1
         fi
         
-        if [ -z "$XRAY_DOWNLOAD_URL" ]; then
-            echo -e "${RED}获取Xray下载链接失败${NC}"
+        echo -e "${BLUE}正在下载 Xray...${NC}"
+        wget -q "$XRAY_DOWNLOAD_URL" -O /tmp/xray.zip
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}下载 Xray 失败${NC}"
             exit 1
         fi
         
-        # 下载并解压
-        wget -q "$XRAY_DOWNLOAD_URL" -O /tmp/xray.zip
+        echo -e "${BLUE}正在解压和安装...${NC}"
         unzip -q /tmp/xray.zip -d /tmp/xray
         mv /tmp/xray/xray $XRAY_BINARY
         chmod +x $XRAY_BINARY
         rm -rf /tmp/xray /tmp/xray.zip
         
-        # 生成UUID
-        CURRENT_UUID=$(generate_uuid)
+        if [ ! -f "$XRAY_BINARY" ]; then
+            echo -e "${RED}Xray 安装失败${NC}"
+            exit 1
+        fi
     fi
+    
+    # 生成UUID (通用方法)
+    CURRENT_UUID=$(generate_uuid)
     
     # 创建 Xray 配置文件
     mkdir -p $XRAY_INSTALL_DIR
@@ -172,7 +180,7 @@ install_xray() {
 {
   "inbounds": [
     {
-      "port": 8080,
+      "port": 10000,
       "listen": "127.0.0.1",
       "protocol": "vless",
       "settings": {
@@ -230,6 +238,8 @@ command="${XRAY_BINARY}"
 command_args="run -config ${XRAY_CONFIG_FILE}"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
+output_log="/var/log/xray.log"
+error_log="/var/log/xray.err"
 
 depend() {
     need net
@@ -278,7 +288,7 @@ configure_tunnel() {
 
     if [ "$mode_choice" = "1" ]; then
         TUNNEL_MODE="temp"
-        exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080"
+        exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:10000"
         CURRENT_DOMAIN="pending..."
         echo -e "${GREEN}已选择临时隧道模式。${NC}"
     elif [ "$mode_choice" = "2" ]; then
@@ -331,6 +341,8 @@ command="${CLOUDFLARED_BINARY}"
 command_args="${cmd_args}"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
+output_log="/var/log/cloudflared.log"
+error_log="/var/log/cloudflared.err"
 
 depend() {
     need net
@@ -508,9 +520,9 @@ fetch_temp_domain() {
     echo -e "${BLUE}正在从日志中获取临时域名...${NC}"
     for i in {1..5}; do
         if [ "$SERVICE_MANAGER" = "systemd" ]; then
-            domain=$(journalctl -u cloudflared.service --since "5 minutes ago" | grep -o 'https://[a-z0-9-]*\.trycloudflare.com' | tail -n 1 | sed 's/https:\/\///')
+            domain=$(journalctl -u cloudflared.service --since "5 minutes ago" 2>/dev/null | grep -o 'https://[a-z0-9-]*\.trycloudflare.com' | tail -n 1 | sed 's/https:\/\///')
         else
-            domain=$(cat /var/log/messages 2>/dev/null | grep cloudflared | grep -o 'https://[a-z0-9-]*\.trycloudflare.com' | tail -n 1 | sed 's/https:\/\///')
+            domain=$(cat /var/log/cloudflared.log 2>/dev/null | grep -o 'https://[a-z0-9-]*\.trycloudflare.com' | tail -n 1 | sed 's/https:\/\///')
         fi
         if [ -n "$domain" ]; then
             CURRENT_DOMAIN=$domain
@@ -555,7 +567,7 @@ view_logs() {
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         journalctl -u "${service_name}" -f --no-pager
     else
-        tail -f /var/log/messages 2>/dev/null | grep ${service_name}
+        tail -f /var/log/${service_name}.log 2>/dev/null
     fi
     press_any_key
 }
@@ -567,11 +579,7 @@ view_logs() {
 # 修改 UUID
 modify_uuid() {
     echo -e "${BLUE}正在生成新的 UUID...${NC}"
-    if [ "$OS_TYPE" = "debian" ] && [ -f "$XRAY_BINARY" ]; then
-        CURRENT_UUID=$($XRAY_BINARY uuid)
-    else
-        CURRENT_UUID=$(generate_uuid)
-    fi
+    CURRENT_UUID=$(generate_uuid)
     
     sed -i "s/\"id\": \".*\"/\"id\": \"${CURRENT_UUID}\"/" $XRAY_CONFIG_FILE
     
@@ -628,7 +636,7 @@ modify_permanent_tunnel() {
 switch_to_temp_tunnel() {
     echo -e "${BLUE}--- 切换到临时隧道 ---${NC}"
     
-    local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080"
+    local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:10000"
     
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         sed -i "/^ExecStart=/c\ExecStart=${exec_start_cmd}" $CLOUDFLARED_SERVICE_FILE
@@ -696,6 +704,12 @@ do_uninstall() {
         
         echo -e "${BLUE}正在清理节点信息文件...${NC}"
         rm -f $NODE_INFO_FILE
+        
+        # 清理日志文件
+        if [ "$SERVICE_MANAGER" = "openrc" ]; then
+            rm -f /var/log/xray.log /var/log/xray.err
+            rm -f /var/log/cloudflared.log /var/log/cloudflared.err
+        fi
         
         echo -e "\n${GREEN}卸载完成。${NC}"
     else
@@ -776,7 +790,7 @@ show_main_menu() {
     fi
 
     echo "======================================================"
-    echo "      VLESS + Argo 隧道一键管理脚本 v1.3.0"
+    echo "      VLESS + Argo 隧道一键管理脚本 v1.3.1"
     echo "        支持 Debian/Ubuntu 和 Alpine Linux"
     echo "======================================================"
     if [ "$INSTALLED_STATUS" = "installed" ]; then
