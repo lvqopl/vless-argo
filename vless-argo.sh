@@ -1,108 +1,128 @@
 #!/bin/bash
 
 # VLESS + Argo Tunnel 完整管理脚本
+# 版本: 3.0
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}错误: 需要 root 权限${NC}" 
-   exit 1
-fi
+[[ $EUID -ne 0 ]] && { echo -e "${RED}错误: 需要 root 权限${NC}"; exit 1; }
 
 is_installed() {
-    [[ -f /usr/local/bin/xray ]] && [[ -f /usr/local/bin/cloudflared ]]
+    [[ -f /usr/local/bin/xray && -f /usr/local/bin/cloudflared ]]
 }
 
 show_menu() {
     clear
-    echo "════════════════════════════════════"
-    echo "   VLESS + Argo Tunnel 管理面板"
-    echo "════════════════════════════════════"
+    echo -e "${BLUE}╔════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║   VLESS + Argo Tunnel 管理面板   ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════╝${NC}"
     echo ""
     
     if is_installed; then
         echo -e "${GREEN}● 状态: 已安装${NC}"
         echo ""
-        echo "1) 查看服务状态"
-        echo "2) 启动所有服务"
-        echo "3) 停止所有服务"
-        echo "4) 重启所有服务"
-        echo "5) 查看节点信息"
-        echo "6) 查看 Argo 域名"
-        echo "7) 查看配置详情"
-        echo "8) 修改节点信息"
-        echo "9) 重新安装"
-        echo "10) 完全卸载"
-        echo "0) 退出"
+        echo "【服务管理】"
+        echo "  1) 查看服务状态"
+        echo "  2) 启动所有服务"
+        echo "  3) 停止所有服务"
+        echo "  4) 重启所有服务"
+        echo ""
+        echo "【信息查看】"
+        echo "  5) 查看节点信息"
+        echo "  6) 查看 Argo 域名"
+        echo "  7) 查看日志"
+        echo ""
+        echo "【高级功能】"
+        echo "  8) 重新安装"
+        echo "  9) 完全卸载"
+        echo ""
+        echo "  0) 退出"
     else
         echo -e "${RED}● 状态: 未安装${NC}"
         echo ""
-        echo "1) 开始安装"
-        echo "0) 退出"
+        echo "  1) 开始安装"
+        echo "  0) 退出"
     fi
     echo ""
-    echo -n "请选择: "
+    echo -n -e "${GREEN}请选择操作: ${NC}"
 }
 
 install_system() {
     clear
-    echo "════════════════════════════════════"
-    echo "   开始安装 VLESS + Argo Tunnel"
-    echo "════════════════════════════════════"
+    echo -e "${GREEN}╔════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║        开始安装 VLESS + Argo       ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════╝${NC}"
     echo ""
     
     UUID=$(cat /proc/sys/kernel/random/uuid)
     PREFERRED_IP="cf.877774.xyz"
     NODE_FILE="/root/vless_node_info.txt"
     
+    # 安装依赖
     echo -e "${YELLOW}[1/7] 安装依赖包...${NC}"
     apt-get update -y >/dev/null 2>&1
     apt-get install -y curl wget unzip qrencode >/dev/null 2>&1
     echo -e "${GREEN}✓ 完成${NC}"
     
+    # 安装 Xray
     echo -e "${YELLOW}[2/7] 安装 Xray...${NC}"
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1
     echo -e "${GREEN}✓ 完成${NC}"
     
+    # 配置 Xray
     echo -e "${YELLOW}[3/7] 配置 Xray...${NC}"
     mkdir -p /usr/local/etc/xray
-    cat > /usr/local/etc/xray/config.json <<XRAYEOF
+    cat > /usr/local/etc/xray/config.json << XRAYCONFIG
 {
-  "log": {"loglevel": "warning"},
-  "inbounds": [{
-    "port": 8080,
-    "protocol": "vless",
-    "settings": {
-      "clients": [{"id": "${UUID}", "level": 0}],
-      "decryption": "none"
-    },
-    "streamSettings": {
-      "network": "ws",
-      "wsSettings": {"path": "/vless"}
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": 8080,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${UUID}",
+            "level": 0
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "/vless"
+        }
+      }
     }
-  }],
-  "outbounds": [{"protocol": "freedom"}]
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
 }
-XRAYEOF
+XRAYCONFIG
     
     systemctl enable xray >/dev/null 2>&1
     systemctl start xray
     echo -e "${GREEN}✓ 完成${NC}"
     
+    # 安装 Cloudflared
     echo -e "${YELLOW}[4/7] 安装 Cloudflared...${NC}"
     ARCH=$(uname -m)
-    if [[ "$ARCH" == "x86_64" ]]; then
-        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-    else
-        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
-    fi
-    wget -q -O /usr/local/bin/cloudflared $CF_URL
+    [[ "$ARCH" == "x86_64" ]] && CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" || CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
+    wget -q -O /usr/local/bin/cloudflared "$CF_URL"
     chmod +x /usr/local/bin/cloudflared
     echo -e "${GREEN}✓ 完成${NC}"
     
+    # 配置 Argo Tunnel
     echo -e "${YELLOW}[5/7] 配置 Argo Tunnel...${NC}"
     echo ""
     echo "选择隧道类型:"
@@ -115,7 +135,7 @@ XRAYEOF
         read -p "输入固定域名: " custom_domain
         custom_domain=$(echo "$custom_domain" | sed 's|https\?://||')
         
-        cat > /etc/systemd/system/cloudflared.service <<CFEOF2
+        cat > /etc/systemd/system/cloudflared.service << FIXEDTUNNEL
 [Unit]
 Description=Cloudflare Tunnel
 After=network.target
@@ -128,9 +148,9 @@ RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
-CFEOF2
+FIXEDTUNNEL
     else
-        cat > /etc/systemd/system/cloudflared.service <<'CFEOF1'
+        cat > /etc/systemd/system/cloudflared.service << 'TEMPTUNNEL'
 [Unit]
 Description=Cloudflare Tunnel
 After=network.target
@@ -143,7 +163,7 @@ RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
-CFEOF1
+TEMPTUNNEL
     fi
     
     systemctl daemon-reload
@@ -151,24 +171,25 @@ CFEOF1
     systemctl start cloudflared
     echo -e "${GREEN}✓ 完成${NC}"
     
+    # 配置监控
     echo -e "${YELLOW}[6/7] 配置监控服务...${NC}"
-    cat > /usr/local/bin/vless_monitor.sh <<'MONEOF'
+    cat > /usr/local/bin/vless_monitor.sh << 'MONITOR'
 #!/bin/bash
 for svc in xray cloudflared; do
     systemctl is-active --quiet $svc || systemctl restart $svc
 done
-MONEOF
+MONITOR
     chmod +x /usr/local/bin/vless_monitor.sh
     
-    cat > /etc/systemd/system/vless-monitor.service <<'SVCEOF'
+    cat > /etc/systemd/system/vless-monitor.service << 'MONSVC'
 [Unit]
 Description=VLESS Monitor
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/vless_monitor.sh
-SVCEOF
+MONSVC
     
-    cat > /etc/systemd/system/vless-monitor.timer <<'TIMEOF'
+    cat > /etc/systemd/system/vless-monitor.timer << 'MONTIMER'
 [Unit]
 Description=VLESS Monitor Timer
 [Timer]
@@ -176,13 +197,14 @@ OnBootSec=30sec
 OnUnitActiveSec=2min
 [Install]
 WantedBy=timers.target
-TIMEOF
+MONTIMER
     
     systemctl daemon-reload
     systemctl enable vless-monitor.timer >/dev/null 2>&1
     systemctl start vless-monitor.timer
     echo -e "${GREEN}✓ 完成${NC}"
     
+    # 生成节点信息
     echo -e "${YELLOW}[7/7] 生成节点信息...${NC}"
     sleep 5
     
@@ -190,54 +212,52 @@ TIMEOF
         domain="$custom_domain"
     else
         domain=$(journalctl -u cloudflared -n 100 --no-pager 2>/dev/null | grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1 | sed 's|https://||')
-        [[ -z "$domain" ]] && domain="未获取到域名,请稍后查看"
+        [[ -z "$domain" ]] && domain="正在获取域名..."
     fi
     
-    link_std="vless://${UUID}@${domain}:443?encryption=none&security=tls&type=ws&host=${domain}&path=%2Fvless#ArgoVLESS"
-    link_opt="vless://${UUID}@${PREFERRED_IP}:443?encryption=none&security=tls&sni=${domain}&fp=chrome&alpn=h3%2Ch2%2Chttp%2F1.1&type=ws&host=${domain}&path=%2Fvless#ArgoVLESS-优选"
-    
-    cat > "$NODE_FILE" <<NODEEOF
-════════════════════════════════════
-    VLESS + Argo 节点信息
-════════════════════════════════════
-生成时间: $(date '+%Y-%m-%d %H:%M:%S')
-
-【基本信息】
-UUID: ${UUID}
-域名: ${domain}
-端口: 443
-路径: /vless
-传输: WebSocket
-TLS: 开启
-
-【标准连接】
-${link_std}
-
-【优选IP连接（推荐）】
-${link_opt}
-
-【客户端配置 - 优选IP版】
-服务器地址: ${PREFERRED_IP}
-端口: 443
-UUID: ${UUID}
-传输协议: ws
-路径: /vless
-SNI: ${domain}
-TLS: 开启
-指纹: chrome
-ALPN: h3,h2,http/1.1
-
-════════════════════════════════════
-查看节点: cat ${NODE_FILE}
-查看域名: journalctl -u cloudflared -n 50 | grep trycloudflare
-════════════════════════════════════
-NODEEOF
+    # 生成节点信息文件
+    {
+        echo "════════════════════════════════════"
+        echo "    VLESS + Argo 节点信息"
+        echo "════════════════════════════════════"
+        echo "生成时间: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo ""
+        echo "【基本信息】"
+        echo "UUID: ${UUID}"
+        echo "域名: ${domain}"
+        echo "端口: 443"
+        echo "路径: /vless"
+        echo "传输: WebSocket"
+        echo "TLS: 开启"
+        echo ""
+        echo "【标准连接】"
+        echo "vless://${UUID}@${domain}:443?encryption=none&security=tls&type=ws&host=${domain}&path=%2Fvless#ArgoVLESS"
+        echo ""
+        echo "【优选IP连接（推荐）】"
+        echo "vless://${UUID}@${PREFERRED_IP}:443?encryption=none&security=tls&sni=${domain}&fp=chrome&alpn=h3%2Ch2%2Chttp%2F1.1&type=ws&host=${domain}&path=%2Fvless#ArgoVLESS-优选"
+        echo ""
+        echo "【客户端配置 - 优选IP版】"
+        echo "服务器地址: ${PREFERRED_IP}"
+        echo "端口: 443"
+        echo "UUID: ${UUID}"
+        echo "传输协议: ws"
+        echo "路径: /vless"
+        echo "SNI: ${domain}"
+        echo "TLS: 开启"
+        echo "指纹: chrome"
+        echo "ALPN: h3,h2,http/1.1"
+        echo ""
+        echo "════════════════════════════════════"
+        echo "查看节点: cat ${NODE_FILE}"
+        echo "查看域名: journalctl -u cloudflared -n 50 | grep trycloudflare"
+        echo "════════════════════════════════════"
+    } > "$NODE_FILE"
     
     echo -e "${GREEN}✓ 完成${NC}"
     echo ""
-    echo -e "${GREEN}════════════════════════════════════${NC}"
-    echo -e "${GREEN}        安装成功！${NC}"
-    echo -e "${GREEN}════════════════════════════════════${NC}"
+    echo -e "${GREEN}╔════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║            安装成功！              ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════╝${NC}"
     echo ""
     cat "$NODE_FILE"
     echo ""
@@ -254,14 +274,9 @@ uninstall_system() {
     systemctl stop vless-monitor.timer xray cloudflared 2>/dev/null
     systemctl disable vless-monitor.timer xray cloudflared 2>/dev/null
     
-    rm -rf /etc/systemd/system/vless-monitor.timer
-    rm -rf /etc/systemd/system/vless-monitor.service
-    rm -rf /etc/systemd/system/cloudflared.service
-    rm -rf /usr/local/bin/xray
-    rm -rf /usr/local/bin/cloudflared
-    rm -rf /usr/local/bin/vless_monitor.sh
-    rm -rf /usr/local/etc/xray
-    rm -rf /root/vless_node_info.txt
+    rm -rf /etc/systemd/system/vless-monitor.{timer,service} /etc/systemd/system/cloudflared.service
+    rm -rf /usr/local/bin/{xray,cloudflared,vless_monitor.sh}
+    rm -rf /usr/local/etc/xray /root/vless_node_info.txt
     
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge 2>/dev/null
     
@@ -276,11 +291,7 @@ check_status() {
     echo "   服务状态"
     echo "════════════════════════════════════"
     echo ""
-    echo -e "${YELLOW}=== Xray 状态 ===${NC}"
-    systemctl status xray --no-pager | head -15
-    echo ""
-    echo -e "${YELLOW}=== Cloudflared 状态 ===${NC}"
-    systemctl status cloudflared --no-pager | head -15
+    systemctl status xray cloudflared --no-pager | head -30
     echo ""
     read -p "按回车返回..."
 }
@@ -291,11 +302,7 @@ show_node() {
     echo "   节点信息"
     echo "════════════════════════════════════"
     echo ""
-    if [[ -f /root/vless_node_info.txt ]]; then
-        cat /root/vless_node_info.txt
-    else
-        echo "节点信息文件不存在"
-    fi
+    cat /root/vless_node_info.txt 2>/dev/null || echo "节点信息文件不存在"
     echo ""
     read -p "按回车返回..."
 }
@@ -307,15 +314,12 @@ show_domain() {
     echo "════════════════════════════════════"
     echo ""
     domain=$(journalctl -u cloudflared -n 100 --no-pager 2>/dev/null | grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1)
-    if [[ -n "$domain" ]]; then
-        echo -e "${GREEN}${domain}${NC}"
-    else
-        echo "未找到域名，可能使用的是固定隧道"
-    fi
+    echo -e "${GREEN}${domain:-未找到域名}${NC}"
     echo ""
     read -p "按回车返回..."
 }
 
+# 主循环
 while true; do
     show_menu
     read choice
@@ -328,18 +332,17 @@ while true; do
             4) systemctl restart xray cloudflared; echo "✓ 已重启"; sleep 2 ;;
             5) show_node ;;
             6) show_domain ;;
-            7) clear; cat /usr/local/etc/xray/config.json 2>/dev/null; read -p "按回车返回..." ;;
-            8) nano /root/vless_node_info.txt ;;
-            9) uninstall_system; install_system ;;
-            10) uninstall_system ;;
+            7) journalctl -u xray -u cloudflared -n 50 --no-pager; read -p "按回车..." ;;
+            8) uninstall_system; install_system ;;
+            9) uninstall_system ;;
             0) echo "再见!"; exit 0 ;;
-            *) echo "无效选项"; sleep 1 ;;
+            *) sleep 1 ;;
         esac
     else
         case $choice in
             1) install_system ;;
             0) echo "再见!"; exit 0 ;;
-            *) echo "无效选项"; sleep 1 ;;
+            *) sleep 1 ;;
         esac
     fi
 done
