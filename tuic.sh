@@ -6,7 +6,7 @@
 # Description: A comprehensive script for one-click deployment and management of 
 #              a TUIC v5 server in an LXC Debian container.
 # Author:      AI Assistant
-# Version:     1.1.0
+# Version:     1.2.0 (Stable Download Fix)
 #===============================================================================================
 
 # --- 颜色代码 ---
@@ -50,7 +50,6 @@ check_root() {
 update_status() {
     if [ -f "$TUIC_BINARY" ] && [ -f "$TUIC_CONFIG_FILE" ] && [ -f "$NODE_INFO_FILE" ]; then
         INSTALLED_STATUS="installed"
-        # 从信息文件中加载配置
         SERVER_IP=$(grep "服务器IP:" "$NODE_INFO_FILE" | awk '{print $2}')
         CURRENT_PORT=$(grep "端口:" "$NODE_INFO_FILE" | awk '{print $2}')
         CURRENT_UUID=$(grep "UUID:" "$NODE_INFO_FILE" | awk '{print $2}')
@@ -86,8 +85,8 @@ get_public_ip() {
 
 # 安装必要的依赖
 install_dependencies() {
-    echo -e "${BLUE}正在更新软件包列表并安装依赖项 (curl, wget, openssl, jq)...${NC}"
-    apt-get update && apt-get install -y curl wget openssl jq > /dev/null 2>&1
+    echo -e "${BLUE}正在更新软件包列表并安装依赖项 (curl, wget, openssl)...${NC}"
+    apt-get update && apt-get install -y curl wget openssl > /dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo -e "${RED}依赖项安装失败。${NC}"
         exit 1
@@ -99,37 +98,22 @@ install_dependencies() {
 install_tuic_server() {
     echo -e "${BLUE}正在安装 TUIC Server...${NC}"
     ARCH=$(uname -m)
-    
-    # 优先使用 API 获取最新版本
-    echo -e "${BLUE}正在尝试通过 GitHub API 获取最新版本...${NC}"
+    local STABLE_VERSION="5.0.0" # 使用一个已知的稳定v5版本
+    local DOWNLOAD_URL=""
+
     if [ "$ARCH" = "x86_64" ]; then
-        DOWNLOAD_URL=$(curl -sL "https://api.github.com/repos/EAimTY/tuic/releases/latest" | jq -r '.assets[] | select(.name | contains("x86_64-linux-gnu")) | .browser_download_url')
+        DOWNLOAD_URL="https://github.com/EAimTY/tuic/releases/download/tuic-server-${STABLE_VERSION}/tuic-server-${STABLE_VERSION}-x86_64-linux-gnu"
     elif [ "$ARCH" = "aarch64" ]; then
-        DOWNLOAD_URL=$(curl -sL "https://api.github.com/repos/EAimTY/tuic/releases/latest" | jq -r '.assets[] | select(.name | contains("aarch64-linux-gnu")) | .browser_download_url')
-    fi
-
-    # 如果 API 失败，则使用备用方案
-    if [ -z "$DOWNLOAD_URL" ]; then
-        echo -e "${YELLOW}通过 API 获取链接失败 (可能触发了速率限制)，正在启用备用下载方案...${NC}"
-        # 在这里设置一个已知的稳定版本作为备用
-        local FALLBACK_VERSION="5.0.0" 
-        if [ "$ARCH" = "x86_64" ]; then
-            DOWNLOAD_URL="https://github.com/EAimTY/tuic/releases/download/tuic-server-${FALLBACK_VERSION}/tuic-server-${FALLBACK_VERSION}-x86_64-linux-gnu"
-        elif [ "$ARCH" = "aarch64" ]; then
-            DOWNLOAD_URL="https://github.com/EAimTY/tuic/releases/download/tuic-server-${FALLBACK_VERSION}/tuic-server-${FALLBACK_VERSION}-aarch64-linux-gnu"
-        fi
-    fi
-
-    # 最终检查
-    if [ -z "$DOWNLOAD_URL" ]; then
-        echo -e "${RED}获取 TUIC Server 下载链接失败。请检查网络或稍后再试。${NC}"
+        DOWNLOAD_URL="https://github.com/EAimTY/tuic/releases/download/tuic-server-${STABLE_VERSION}/tuic-server-${STABLE_VERSION}-aarch64-linux-gnu"
+    else
+        echo -e "${RED}不支持的架构: $ARCH. 仅支持 x86_64 和 aarch64。${NC}"
         exit 1
     fi
 
-    echo -e "${BLUE}正在从以下链接下载: ${DOWNLOAD_URL}${NC}"
+    echo -e "${BLUE}正在从固定链接下载 (版本: ${STABLE_VERSION})...${NC}"
     wget -q "$DOWNLOAD_URL" -O $TUIC_BINARY
     if [ $? -ne 0 ]; then
-        echo -e "${RED}下载 TUIC Server 失败。${NC}"
+        echo -e "${RED}下载 TUIC Server 失败。请检查网络或稍后再试。${NC}"
         exit 1
     fi
     
@@ -345,9 +329,7 @@ modify_token() {
     local OLD_TOKEN=$CURRENT_TOKEN
     CURRENT_TOKEN=$(openssl rand -base64 16)
     
-    # 替换主 token 列表
     sed -i "s/\"${OLD_TOKEN}\"/\"${CURRENT_TOKEN}\"/" $TUIC_CONFIG_FILE
-    # 替换 users 里的密码 (虽然不起主要作用，但保持一致)
     sed -i "s/\"${CURRENT_UUID}\": \".*\"/\"${CURRENT_UUID}\": \"${CURRENT_TOKEN}\"/" $TUIC_CONFIG_FILE
     
     echo -e "${GREEN}新密码(Token)已生成。${NC}"
@@ -433,7 +415,7 @@ do_uninstall() {
 
 show_modify_menu() {
     clear
-    local CURRENT_UUID_OLD=$CURRENT_UUID # 捕获当前UUID用于替换
+    local CURRENT_UUID_OLD=$CURRENT_UUID
     echo -e "${BLUE}--- 修改配置 ---${NC}"
     echo "1. 修改 UUID"
     echo "2. 修改密码 (Token)"
@@ -454,7 +436,7 @@ show_main_menu() {
     clear
     update_status
     echo "======================================================"
-    echo "         TUIC v5 协议一键部署管理脚本 v1.1.0"
+    echo "      TUIC v5 协议一键部署管理脚本 v1.2.0 (稳定版)"
     echo "======================================================"
     if [ "$INSTALLED_STATUS" = "installed" ]; then
         echo -e "状态: ${GREEN}已安装${NC} | IP: ${YELLOW}${SERVER_IP}${NC} | 端口: ${YELLOW}${CURRENT_PORT} (UDP)${NC}"
