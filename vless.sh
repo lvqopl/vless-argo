@@ -6,7 +6,7 @@
 # Description: A comprehensive script for one-click deployment and management of 
 #              VLESS with Cloudflare Argo Tunnel. Supports Debian and Alpine Linux.
 # Author:      AI Assistant
-# Version:     1.3.2 (Always Show Full Menu)
+# Version:     1.4.1 (Unified Port 8080)
 #===============================================================================================
 
 # --- 颜色代码 ---
@@ -41,7 +41,6 @@ CLOUDFLARED_SERVICE_FILE=""
 #                              系统检测函数
 #===============================================================================================
 
-# 检测操作系统类型
 detect_os() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
@@ -69,7 +68,6 @@ detect_os() {
 #                              核心辅助函数
 #===============================================================================================
 
-# 检查是否为 root 用户
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         echo -e "${RED}错误:此脚本必须以 root 身份运行。请使用 'sudo' 或 'su'。${NC}"
@@ -77,12 +75,11 @@ check_root() {
     fi
 }
 
-# 通过检查文件来更新安装状态
 update_status() {
     if [ -f "$XRAY_BINARY" ] && [ -f "$CLOUDFLARED_BINARY" ] && [ -f "$NODE_INFO_FILE" ]; then
         INSTALLED_STATUS="installed"
-        CURRENT_UUID=$(grep "UUID:" "$NODE_INFO_FILE" | awk '{print $2}')
-        CURRENT_DOMAIN=$(grep "域名:" "$NODE_INFO_FILE" | awk '{print $2}')
+        CURRENT_UUID=$(grep "^UUID:" "$NODE_INFO_FILE" | head -n1 | awk '{print $2}')
+        CURRENT_DOMAIN=$(grep "^域名:" "$NODE_INFO_FILE" | head -n1 | awk '{print $2}')
         if grep -q "trycloudflare.com" <<< "$CURRENT_DOMAIN"; then
             TUNNEL_MODE="temp"
         else
@@ -93,13 +90,11 @@ update_status() {
     fi
 }
 
-# 暂停并等待用户按下回车键
 press_any_key() {
     echo -e "\n${YELLOW}按回车键继续...${NC}"
     read -r
 }
 
-# 生成UUID (通用函数)
 generate_uuid() {
     cat /proc/sys/kernel/random/uuid
 }
@@ -108,7 +103,6 @@ generate_uuid() {
 #                              安装功能函数
 #===============================================================================================
 
-# 安装必要的依赖
 install_dependencies() {
     echo -e "${BLUE}正在更新软件包列表并安装依赖项...${NC}"
     
@@ -127,19 +121,16 @@ install_dependencies() {
     echo -e "${GREEN}依赖项安装成功。${NC}"
 }
 
-# 安装 Xray-core (通用方法,适配Alpine)
 install_xray() {
     echo -e "${BLUE}正在安装 Xray-core...${NC}"
     
     if [ "$OS_TYPE" = "debian" ]; then
-        # Debian/Ubuntu 使用官方安装脚本
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" -s install 2>&1 | grep -v "^error:"
         if [ ! -f "$XRAY_BINARY" ]; then
             echo -e "${RED}Xray 安装失败。${NC}"
             exit 1
         fi
     else
-        # Alpine 手动下载安装
         ARCH=$(uname -m)
         echo -e "${BLUE}检测到架构: ${ARCH}${NC}"
         
@@ -171,16 +162,15 @@ install_xray() {
         fi
     fi
     
-    # 生成UUID (通用方法)
     CURRENT_UUID=$(generate_uuid)
     
-    # 创建 Xray 配置文件
     mkdir -p $XRAY_INSTALL_DIR
+    # 关键修改：Xray 监听 8080 端口
     cat > $XRAY_CONFIG_FILE <<-EOF
 {
   "inbounds": [
     {
-      "port": 10000,
+      "port": 8080,
       "listen": "127.0.0.1",
       "protocol": "vless",
       "settings": {
@@ -207,7 +197,6 @@ install_xray() {
 }
 EOF
 
-    # 创建服务文件
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         cat > $XRAY_SERVICE_FILE <<-EOF
 [Unit]
@@ -228,7 +217,6 @@ RestartPreventExitStatus=23
 WantedBy=multi-user.target
 EOF
     else
-        # OpenRC 服务文件
         cat > $XRAY_SERVICE_FILE <<-EOF
 #!/sbin/openrc-run
 
@@ -249,10 +237,9 @@ EOF
         chmod +x $XRAY_SERVICE_FILE
     fi
     
-    echo -e "${GREEN}Xray-core 安装和配置成功。${NC}"
+    echo -e "${GREEN}Xray-core 安装和配置成功 (监听端口: 8080)。${NC}"
 }
 
-# 安装 Cloudflared
 install_cloudflared() {
     echo -e "${BLUE}正在安装 Cloudflared...${NC}"
     ARCH=$(uname -m)
@@ -275,7 +262,6 @@ install_cloudflared() {
     echo -e "${GREEN}Cloudflared 安装成功。${NC}"
 }
 
-# 配置隧道
 configure_tunnel() {
     clear
     echo -e "${BLUE}--- 隧道模式选择 ---${NC}"
@@ -284,13 +270,49 @@ configure_tunnel() {
     echo -e "--------------------------------"
     read -p "请选择一个模式 [1-2]: " mode_choice
 
-    local exec_start_cmd
-
     if [ "$mode_choice" = "1" ]; then
         TUNNEL_MODE="temp"
-        exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:10000"
         CURRENT_DOMAIN="pending..."
         echo -e "${GREEN}已选择临时隧道模式。${NC}"
+        
+        # 关键修改：临时隧道代理到 8080 端口
+        if [ "$SERVICE_MANAGER" = "systemd" ]; then
+            cat > $CLOUDFLARED_SERVICE_FILE <<-EOF
+[Unit]
+Description=Cloudflare Tunnel
+After=network.target
+
+[Service]
+User=root
+Type=simple
+Restart=on-failure
+RestartSec=5s
+ExecStart=${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        else
+            cat > $CLOUDFLARED_SERVICE_FILE <<-'EOFSCRIPT'
+#!/sbin/openrc-run
+
+name="cloudflared"
+description="Cloudflare Tunnel"
+command="/usr/local/bin/cloudflared"
+command_args="tunnel --no-autoupdate --url http://127.0.0.1:8080"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/cloudflared.log"
+error_log="/var/log/cloudflared.err"
+
+depend() {
+    need net
+    after firewall
+}
+EOFSCRIPT
+            chmod +x $CLOUDFLARED_SERVICE_FILE
+        fi
+        
     elif [ "$mode_choice" = "2" ]; then
         TUNNEL_MODE="permanent"
         read -p "请输入您的 Cloudflare Argo Tunnel Token: " argo_token
@@ -304,17 +326,12 @@ configure_tunnel() {
             exit 1
         fi
         CURRENT_DOMAIN=$custom_domain
-        exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate run --token ${argo_token}"
         echo -e "${GREEN}已为域名 ${CURRENT_DOMAIN} 选择固定隧道模式${NC}"
         echo -e "${YELLOW}重要提示:请确保您已在 Cloudflare DNS 中为 '${CURRENT_DOMAIN}' 设置了 CNAME 记录。${NC}"
-    else
-        echo -e "${RED}无效的选择。正在中止。${NC}"
-        exit 1
-    fi
-
-    # 创建服务文件
-    if [ "$SERVICE_MANAGER" = "systemd" ]; then
-        cat > $CLOUDFLARED_SERVICE_FILE <<-EOF
+        echo -e "${YELLOW}并在 Cloudflare Tunnel 后台将 Public Hostname 的 Service URL 设置为: ${RED}http://localhost:8080${NC}"
+        
+        if [ "$SERVICE_MANAGER" = "systemd" ]; then
+            cat > $CLOUDFLARED_SERVICE_FILE <<-EOF
 [Unit]
 Description=Cloudflare Tunnel
 After=network.target
@@ -324,21 +341,19 @@ User=root
 Type=simple
 Restart=on-failure
 RestartSec=5s
-ExecStart=${exec_start_cmd}
+ExecStart=${CLOUDFLARED_BINARY} tunnel --no-autoupdate run --token ${argo_token}
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    else
-        # OpenRC 服务文件
-        local cmd_args="${exec_start_cmd#${CLOUDFLARED_BINARY} }"
-        cat > $CLOUDFLARED_SERVICE_FILE <<-EOF
+        else
+            cat > $CLOUDFLARED_SERVICE_FILE <<-EOFSCRIPT
 #!/sbin/openrc-run
 
 name="cloudflared"
 description="Cloudflare Tunnel"
-command="${CLOUDFLARED_BINARY}"
-command_args="${cmd_args}"
+command="/usr/local/bin/cloudflared"
+command_args="tunnel --no-autoupdate run --token ${argo_token}"
 command_background="yes"
 pidfile="/run/\${RC_SVCNAME}.pid"
 output_log="/var/log/cloudflared.log"
@@ -348,12 +363,15 @@ depend() {
     need net
     after firewall
 }
-EOF
-        chmod +x $CLOUDFLARED_SERVICE_FILE
+EOFSCRIPT
+            chmod +x $CLOUDFLARED_SERVICE_FILE
+        fi
+    else
+        echo -e "${RED}无效的选择。正在中止。${NC}"
+        exit 1
     fi
 }
 
-# 生成并保存节点信息
 generate_and_save_node_info() {
     if [ -z "$CURRENT_UUID" ] || [ -z "$CURRENT_DOMAIN" ] || [ "$CURRENT_DOMAIN" = "pending..." ]; then
         echo -e "${RED}无法生成节点信息:缺少 UUID 或域名。${NC}"
@@ -402,7 +420,6 @@ EOF
     echo -e "${GREEN}节点信息已保存到 ${NODE_INFO_FILE}${NC}"
 }
 
-# 服务管理通用函数
 service_control() {
     local action=$1
     local service=$2
@@ -414,7 +431,6 @@ service_control() {
     fi
 }
 
-# 完整安装流程
 do_install() {
     install_dependencies
     install_xray
@@ -449,6 +465,8 @@ do_install() {
     
     generate_and_save_node_info
     echo -e "\n${GREEN}安装完成!${NC}"
+    echo -e "${BLUE}Xray 监听端口: 8080${NC}"
+    echo -e "${BLUE}Cloudflared 代理端口: 8080${NC}"
     view_node_info
 }
 
@@ -456,7 +474,6 @@ do_install() {
 #                              管理功能函数
 #===============================================================================================
 
-# 启动、停止、重启服务
 manage_services() {
     local action=$1
     local action_zh
@@ -484,16 +501,15 @@ manage_services() {
     press_any_key
 }
 
-# 检查服务状态
 check_status() {
-    echo -e "${BLUE}--- Xray 服务状态 ---${NC}"
+    echo -e "${BLUE}--- Xray 服务状态 (监听 8080 端口) ---${NC}"
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         systemctl status xray --no-pager
     else
         rc-service xray status
     fi
     
-    echo -e "\n${BLUE}--- Cloudflared 服务状态 ---${NC}"
+    echo -e "\n${BLUE}--- Cloudflared 服务状态 (代理到 8080 端口) ---${NC}"
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         systemctl status cloudflared --no-pager
     else
@@ -502,7 +518,6 @@ check_status() {
     press_any_key
 }
 
-# 查看节点信息
 view_node_info() {
     if [ -f "$NODE_INFO_FILE" ]; then
         clear
@@ -515,7 +530,6 @@ view_node_info() {
     press_any_key
 }
 
-# 从日志中获取临时 Argo 域名
 fetch_temp_domain() {
     echo -e "${BLUE}正在从日志中获取临时域名...${NC}"
     for i in {1..5}; do
@@ -535,7 +549,6 @@ fetch_temp_domain() {
     return 1
 }
 
-# 查看临时域名
 view_temp_domain() {
     if [ "$TUNNEL_MODE" != "temp" ]; then
         echo -e "${YELLOW}此功能仅适用于临时隧道模式。${NC}"
@@ -545,7 +558,7 @@ view_temp_domain() {
     fetch_temp_domain
     if [ "$CURRENT_DOMAIN" != "not_found" ]; then
         echo -e "${GREEN}当前临时域名: ${CURRENT_DOMAIN}${NC}"
-        local old_domain=$(grep "域名:" "$NODE_INFO_FILE" | awk '{print $2}')
+        local old_domain=$(grep "^域名:" "$NODE_INFO_FILE" | head -n1 | awk '{print $2}')
         if [ "$old_domain" != "$CURRENT_DOMAIN" ]; then
             echo -e "${YELLOW}域名已从 ${old_domain} 更改。${NC}"
             read -p "是否要更新节点信息文件?[y/N]: " confirm
@@ -559,7 +572,6 @@ view_temp_domain() {
     press_any_key
 }
 
-# 查看日志
 view_logs() {
     local service_name=$1
     echo -e "${BLUE}正在显示 ${service_name} 的日志。按 Ctrl+C 退出。${NC}"
@@ -576,7 +588,6 @@ view_logs() {
 #                              修改功能函数
 #===============================================================================================
 
-# 修改 UUID
 modify_uuid() {
     echo -e "${BLUE}正在生成新的 UUID...${NC}"
     CURRENT_UUID=$(generate_uuid)
@@ -594,7 +605,6 @@ modify_uuid() {
     press_any_key
 }
 
-# 切换到或重新配置固定隧道
 modify_permanent_tunnel() {
     echo -e "${BLUE}--- 重新配置固定隧道 ---${NC}"
     read -p "请输入您的新 Cloudflare Argo Tunnel Token: " argo_token
@@ -613,14 +623,11 @@ modify_permanent_tunnel() {
     CURRENT_DOMAIN=$custom_domain
     TUNNEL_MODE="permanent"
     
-    local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate run --token ${argo_token}"
-    
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
-        sed -i "/^ExecStart=/c\ExecStart=${exec_start_cmd}" $CLOUDFLARED_SERVICE_FILE
+        sed -i "/^ExecStart=/c\ExecStart=${CLOUDFLARED_BINARY} tunnel --no-autoupdate run --token ${argo_token}" $CLOUDFLARED_SERVICE_FILE
         systemctl daemon-reload
     else
-        local cmd_args="${exec_start_cmd#${CLOUDFLARED_BINARY} }"
-        sed -i "/^command_args=/c\command_args=\"${cmd_args}\"" $CLOUDFLARED_SERVICE_FILE
+        sed -i "/^command_args=/c\command_args=\"tunnel --no-autoupdate run --token ${argo_token}\"" $CLOUDFLARED_SERVICE_FILE
     fi
     
     service_control restart cloudflared
@@ -628,22 +635,19 @@ modify_permanent_tunnel() {
     echo -e "${BLUE}正在更新节点信息...${NC}"
     generate_and_save_node_info
     
+    echo -e "${YELLOW}重要提醒: 请确保在 Cloudflare Tunnel 后台将 Public Hostname 的 Service URL 设置为: ${RED}http://localhost:8080${NC}"
     echo -e "${GREEN}成功切换到固定隧道模式!${NC}"
     press_any_key
 }
 
-# 切换到临时隧道
 switch_to_temp_tunnel() {
     echo -e "${BLUE}--- 切换到临时隧道 ---${NC}"
     
-    local exec_start_cmd="${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:10000"
-    
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
-        sed -i "/^ExecStart=/c\ExecStart=${exec_start_cmd}" $CLOUDFLARED_SERVICE_FILE
+        sed -i "/^ExecStart=/c\ExecStart=${CLOUDFLARED_BINARY} tunnel --no-autoupdate --url http://127.0.0.1:8080" $CLOUDFLARED_SERVICE_FILE
         systemctl daemon-reload
     else
-        local cmd_args="${exec_start_cmd#${CLOUDFLARED_BINARY} }"
-        sed -i "/^command_args=/c\command_args=\"${cmd_args}\"" $CLOUDFLARED_SERVICE_FILE
+        sed -i "/^command_args=/c\command_args=\"tunnel --no-autoupdate --url http://127.0.0.1:8080\"" $CLOUDFLARED_SERVICE_FILE
     fi
     
     service_control restart cloudflared
@@ -705,7 +709,6 @@ do_uninstall() {
         echo -e "${BLUE}正在清理节点信息文件...${NC}"
         rm -f $NODE_INFO_FILE
         
-        # 清理日志文件
         if [ "$SERVICE_MANAGER" = "openrc" ]; then
             rm -f /var/log/xray.log /var/log/xray.err
             rm -f /var/log/cloudflared.log /var/log/cloudflared.err
@@ -790,8 +793,9 @@ show_main_menu() {
     fi
 
     echo "======================================================"
-    echo "      VLESS + Argo 隧道一键管理脚本 v1.3.2"
+    echo "      VLESS + Argo 隧道一键管理脚本 v1.4.1"
     echo "        支持 Debian/Ubuntu 和 Alpine Linux"
+    echo "            统一使用 8080 端口"
     echo "======================================================"
     if [ "$INSTALLED_STATUS" = "installed" ]; then
         echo -e "系统: ${GREEN}${OS_TYPE}${NC} | 状态: ${GREEN}已安装${NC}"
@@ -814,11 +818,8 @@ show_main_menu() {
 #                                 主脚本逻辑
 #===============================================================================================
 
-# --- 入口点 ---
 main() {
     check_root
-    
-    # 首次运行时立即检测系统类型
     detect_os
     
     while true; do
@@ -845,5 +846,4 @@ main() {
     echo -e "${GREEN}再见!${NC}"
 }
 
-# 运行主函数
 main
